@@ -1,9 +1,17 @@
-# Data Recovery Software
+# Data Recovery
 
-Pre-development specifications for a macOS data recovery application.
+A macOS-first data recovery system.
 
-## Status
-Pre-development. Documentation is being completed before implementation.
+## Development status
 
-## Documentation
-See [docs/README.md](docs/README.md).
+Milestone 0 is in progress.
+
+Current foundation:
+- Rust workspace
+- recovery-core
+- read-only storage I/O contract
+- file-backed disk image adapter
+- range validation
+- cancellation primitive
+
+No physical-device write functionality is exposed by the recovery path.
