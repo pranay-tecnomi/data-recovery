@@ -1,21 +1,34 @@
-# Documentation Index
+# Documentation Index and Reading Order
 
-## Completed
-1. Product Requirements Document
-2. Software Requirements Specification
-3. User Personas and Complete User Journeys
-4. Master Technical Architecture and Diagrams
+## Status model
+IMPLEMENTATION READY: code against this baseline.
+DRAFT: direction only.
+RESEARCH: experiments required before commitments.
 
-## Remaining before coding
-5. Detailed Recovery Engine Specification
-6. macOS Platform, Permissions and Privileged Helper Specification
-7. Data Model and Persistence Specification
-8. API and FFI Interface Specification
-9. Security Threat Model
-10. Error Handling and Failure Recovery Specification
-11. Test Strategy and Recovery Test Lab
-12. UI/UX Specification
-13. Development Roadmap and Release Plan
-14. CI/CD and Release Engineering Specification
+## Capability matrix
+| Capability | Status | Target |
+|---|---|---|
+| Block I/O and disk images | IMPLEMENTATION READY | MVP |
+| GPT/MBR analysis | IMPLEMENTATION READY | MVP |
+| FAT32 recovery | IMPLEMENTATION READY | MVP |
+| exFAT recovery | IMPLEMENTATION READY | MVP |
+| JPEG/PNG/PDF/ZIP carving | IMPLEMENTATION READY | MVP |
+| macOS privileged boundary | IMPLEMENTATION READY | MVP |
+| HFS+ | DRAFT | Post-MVP |
+| NTFS | DRAFT | Later |
+| APFS deleted recovery | RESEARCH | Research |
 
-These documents are the source of truth before implementation.
+## Mandatory reading order
+1. PRD and SRS
+2. Non-functional requirements
+3. Master architecture and ADRs
+4. Coding baseline and state machines
+5. Storage I/O and partition analysis
+6. Imaging and scan/carving framework
+7. FAT32/exFAT specifications
+8. Validation and confidence
+9. Persistence, FFI and macOS XPC
+10. Test corpus and acceptance matrix
+11. Implementation sequence and backlog
+
+The code-ready baseline is MVP only. HFS+, NTFS and APFS do not block MVP.
