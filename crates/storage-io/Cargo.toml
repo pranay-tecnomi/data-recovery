@@ -1,0 +1,11 @@
+[package]
+name = "storage-io"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+recovery-core = { path = "../recovery-core" }
+
+[lib]
+path = "src/lib.rs"
