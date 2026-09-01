@@ -1,0 +1,16 @@
+[workspace]
+resolver = "2"
+members = [
+  "crates/recovery-core",
+  "crates/storage-io",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/pranay-tecnomi/data-recovery"
+
+[workspace.lints.rust]
+unsafe_code = "deny"
+unused_must_use = "deny"
