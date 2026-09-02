@@ -1,27 +1,43 @@
 # Documentation Final Audit
 
-## Code-ready MVP baseline
-The following areas are sufficiently specified to begin implementation:
-- requirements and MVP acceptance
-- module boundaries
-- domain model
-- storage I/O safety contract
-- partition analysis
-- imaging behavior
-- scan and carving architecture
-- FAT32 and exFAT recovery scope
-- confidence model
-- persistence baseline
-- FFI event model
-- macOS privilege and XPC boundary
-- corpus and acceptance testing
-- implementation sequencing
+## Implementation-critical baseline
 
-## Intentionally deferred
-HFS+, NTFS detailed implementation and APFS deleted recovery research.
+The pre-development package now covers:
+- requirements traceability
+- architecture and module boundaries
+- core domain model
+- recovery engine orchestration
+- partition discovery (MBR/GPT)
+- disk imaging
+- filesystem probing
+- FAT32 recovery
+- exFAT recovery
+- file carving
+- file validation
+- recovery output
+- session persistence and resume
+- confidence ranking
+- macOS privileged boundary
+- test corpus and observability
+- milestone and quality-gate planning
 
-## Change rule
-Before changing an implementation-ready contract, update the relevant ADR, traceability mapping and tests.
+## Dependency order
 
-## Conclusion
-Documentation is sufficient for Milestone 0. Further documentation should be driven by implementation discoveries rather than speculative expansion.
+1. recovery-core domain primitives
+2. storage I/O
+3. partition discovery
+4. filesystem probing
+5. FAT32/exFAT metadata recovery
+6. validation and confidence
+7. recovery output
+8. persistence/resume
+9. carving strategies
+10. macOS privileged integration
+
+## Deferred research
+
+APFS and HFS+ detailed deleted-file recovery remain separate research tracks. They must not block the MVP because their recovery semantics and platform constraints require substantially deeper filesystem-specific work.
+
+## Audit conclusion
+
+The MVP documentation is sufficient to proceed with implementation. Remaining documentation should be produced when implementation exposes a concrete unresolved contract, not as speculative expansion.
