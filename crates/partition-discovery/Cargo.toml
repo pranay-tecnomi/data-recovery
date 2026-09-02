@@ -1,0 +1,12 @@
+[package]
+name = "partition-discovery"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+recovery-core = { path = "../recovery-core" }
+storage-io = { path = "../storage-io" }
+
+[lib]
+path = "src/lib.rs"
