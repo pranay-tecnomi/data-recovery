@@ -152,7 +152,7 @@ fn short_name(entry: &[u8]) -> String {
 }
 
 fn parse_directory_bytes(data: &[u8], include_deleted: bool, entries: &mut Vec<DirectoryEntry>) {
-    for raw in data.chunks_exact(DIR_ENTRY_SIZE) {
+    for raw in data.as_chunks::<DIR_ENTRY_SIZE>().0 {
         if raw[0] == END_OF_DIRECTORY { break; }
         let deleted = raw[0] == DELETED;
         let attr = raw[11];
@@ -180,7 +180,7 @@ pub fn read_root_entries<D: BlockDevice>(device: &D, volume_range: ByteRange, in
         read_exact(device, range, &mut data)?;
         let before = entries.len();
         parse_directory_bytes(&data, include_deleted, &mut entries);
-        if data.chunks_exact(DIR_ENTRY_SIZE).any(|e| e[0] == END_OF_DIRECTORY) { break; }
+        if data.as_chunks::<DIR_ENTRY_SIZE>().0.iter().any(|e| e[0] == END_OF_DIRECTORY) { break; }
         if entries.len() < before { return Err(io_error("directory entry accounting failure")); }
     }
     Ok(entries)
