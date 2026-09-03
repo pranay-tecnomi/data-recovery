@@ -53,10 +53,10 @@ pub fn detect_overlaps(result: &mut DiscoveryResult) {
     for pair in ordered.windows(2) {
         let left = pair[0];
         let right = pair[1];
-        if let Ok(end) = left.range.end() {
-            if end > right.range.offset {
-                result.diagnostics.push(Diagnostic::Overlap { left: left.index, right: right.index });
-            }
+        if let Ok(end) = left.range.end()
+            && end > right.range.offset
+        {
+            result.diagnostics.push(Diagnostic::Overlap { left: left.index, right: right.index });
         }
     }
 }
