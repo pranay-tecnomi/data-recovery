@@ -75,7 +75,7 @@ pub fn parse_volume<D: BlockDevice>(device: &D, range: ByteRange) -> RecoveryRes
         .ok_or_else(|| io_error("data offset overflow"))?;
     if first_data_sector >= total { return Err(io_error("FAT32 data region outside volume")); }
     let clusters = (total - first_data_sector) / spc;
-    if clusters < 65_525 || u64::from(root_cluster) >= clusters.saturating_add(2) {
+    if clusters == 0 || u64::from(root_cluster) >= clusters.saturating_add(2) {
         return Err(io_error("invalid FAT32 cluster geometry"));
     }
 
