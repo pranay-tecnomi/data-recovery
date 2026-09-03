@@ -1,10 +1,12 @@
 #![forbid(unsafe_code)]
 
+mod gpt;
 mod mbr;
 
 use recovery_core::{ByteRange, RecoveryError, RecoveryResult};
 use storage_io::BlockDevice;
 
+pub use gpt::{discover_gpt, parse_gpt_header, GptHeader};
 pub use mbr::{discover_mbr, MbrEntry};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -36,6 +38,7 @@ pub enum Diagnostic {
     RangeOverflow { index: u8 },
     UnsupportedExtendedPartition { index: u8 },
     Overlap { left: u8, right: u8 },
+    GptRangeInvalid { index: u32 },
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -52,23 +55,18 @@ pub fn detect_overlaps(result: &mut DiscoveryResult) {
         let right = pair[1];
         if let Ok(end) = left.range.end() {
             if end > right.range.offset {
-                result.diagnostics.push(Diagnostic::Overlap {
-                    left: left.index,
-                    right: right.index,
-                });
+                result.diagnostics.push(Diagnostic::Overlap { left: left.index, right: right.index });
             }
         }
     }
 }
 
-pub fn read_exact_at<D: BlockDevice>(
-    device: &D,
-    offset: u64,
-    output: &mut [u8],
-) -> RecoveryResult<()> {
-    let length = u64::try_from(output.len())
-        .map_err(|_| RecoveryError::LengthTooLarge { length: u64::MAX })?;
+pub fn read_exact_at<D: BlockDevice>(device: &D, offset: u64, output: &mut [u8]) -> RecoveryResult<()> {
+    let length = u64::try_from(output.len()).map_err(|_| RecoveryError::LengthTooLarge { length: u64::MAX })?;
     let range = ByteRange::new(offset, length)?;
-    device.read(range, output)?;
+    let read = device.read(range, output)?;
+    if read != output.len() {
+        return Err(RecoveryError::IoFailure("short read while exact read required".into()));
+    }
     Ok(())
 }
