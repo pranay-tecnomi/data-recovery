@@ -61,7 +61,7 @@ fn probe_fat32(boot: &[u8; 512]) -> Option<ProbeEvidence> {
     let data_sectors = total - data_start;
     let clusters = data_sectors / sectors_per_cluster;
     // FAT32 requires at least 65525 clusters; do not trust the cosmetic type label alone.
-    if clusters < 65_525 || root_cluster >= clusters.saturating_add(2) { return None; }
+    if clusters < 65_525 || u64::from(root_cluster) >= clusters.saturating_add(2) { return None; }
     Some(ProbeEvidence { kind: FilesystemKind::Fat32, confidence: 95, notes: vec!["FAT32 BPB geometry", "FAT32 cluster count", "root cluster", "boot signature"] })
 }
 
