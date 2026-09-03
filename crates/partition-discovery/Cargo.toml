@@ -7,6 +7,7 @@ license.workspace = true
 [dependencies]
 recovery-core = { path = "../recovery-core" }
 storage-io = { path = "../storage-io" }
+crc32fast = "1"
 
 [lib]
 path = "src/lib.rs"
