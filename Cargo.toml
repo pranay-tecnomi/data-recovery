@@ -4,6 +4,7 @@ members = [
   "crates/recovery-core",
   "crates/storage-io",
   "crates/partition-discovery",
+  "crates/filesystem-probe",
 ]
 
 [workspace.package]
