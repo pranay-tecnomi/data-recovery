@@ -217,6 +217,12 @@ mod tests {
         let root=(32+2*600)*512;
         b[root..root+8].copy_from_slice(b"HELLO   "); b[root+8..root+11].copy_from_slice(b"TXT");
         b[root+11]=0x20; b[root+26..root+28].copy_from_slice(&5u16.to_le_bytes()); b[root+28..root+32].copy_from_slice(&12u32.to_le_bytes());
+        // Keep the directory logically open across the cluster boundary. A zero
+        // first byte is an end-of-directory marker, so use deleted slots for
+        // the unused entries in the first cluster.
+        for offset in (root + DIR_ENTRY_SIZE..root + 512).step_by(DIR_ENTRY_SIZE) {
+            b[offset] = DELETED;
+        }
         let root2=root+512;
         b[root2..root2+8].copy_from_slice(b"WORLD   "); b[root2+8..root2+11].copy_from_slice(b"BIN");
         b[root2+11]=0x20; b[root2+26..root2+28].copy_from_slice(&6u16.to_le_bytes()); b[root2+28..root2+32].copy_from_slice(&8u32.to_le_bytes());
