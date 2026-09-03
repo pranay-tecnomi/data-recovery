@@ -1,18 +1,17 @@
 # Requirements Traceability Matrix
 
-| Requirement | Architecture/Module | Specification | Verification |
-|---|---|---|---|
-| Source is never written | storage-io, recovery-core | Storage I/O, NFR | API + integration negative tests |
-| Read arbitrary valid range | storage-io | Block Device | unit + property tests |
-| Resume only same source | recovery-core, session-store | Storage I/O, persistence | fingerprint mismatch tests |
-| Enumerate partitions | partition | Partition spec | GPT/MBR corpus |
-| Recover supported FAT32 cases | filesystem-fat | FAT32 spec | golden corpus |
-| Recover supported exFAT cases | filesystem-exfat | exFAT spec | golden corpus |
-| Image unstable media | recovery-core, storage-io | Imaging spec | fault injection |
-| Carve supported formats | carving, validators | Carving specs | format corpus |
-| Explain uncertainty | recovery-core | Confidence spec | scoring golden tests |
-| Long operations cancellable | core, io | State machines | cancellation tests |
-| Privileged access minimized | macOS adapter/helper | XPC specs | unauthorized-client tests |
-| Destination differs from source | app/core | MVP contract | integration tests |
-
-No requirement is considered implemented without linked automated verification.
+| ID | Requirement | Design source | Test evidence | Milestone |
+|---|---|---|---|---|
+| SAFE-001 | Never write recovery source | recovery engine, storage I/O | compile/API review + integration | 0 |
+| SAFE-002 | Bounds-check all source ranges | core/storage specs | property tests | 0 |
+| PART-001 | Parse MBR | partition spec | corpus | 1 |
+| PART-002 | Parse/validate GPT + backup | partition spec | CRC/corruption corpus | 1 |
+| FS-001 | Detect FAT32 | probing spec | fixtures | 2 |
+| FS-002 | Detect exFAT | probing spec | fixtures | 2 |
+| REC-001 | Recover FAT32 candidates | FAT32 spec | golden images | 3 |
+| REC-002 | Recover exFAT candidates | exFAT spec | golden images | 4 |
+| VAL-001 | Validate candidates | validation spec | corruption corpus | 5 |
+| OUT-001 | Safe output destination | output spec | conflict tests | 5 |
+| SES-001 | Safe resume | session spec | mismatch tests | 6 |
+| CAR-001 | Bounded carving | carving spec | adversarial corpus | 7 |
+| MAC-001 | Narrow privilege boundary | helper spec | auth tests | 8 |
