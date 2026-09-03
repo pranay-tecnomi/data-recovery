@@ -43,7 +43,7 @@ pub fn parse_gpt_header(bytes: &[u8]) -> RecoveryResult<GptHeader> {
     validate_gpt_header_crc(bytes, header_size as usize, header_crc32)?;
     let partition_entry_count = le_u32(&bytes[80..84]);
     let partition_entry_size = le_u32(&bytes[84..88]);
-    if partition_entry_count == 0 || partition_entry_size < PARTITION_ENTRY_MIN_SIZE || partition_entry_size % 8 != 0 { return Err(RecoveryError::IoFailure("invalid GPT partition entry geometry".into())); }
+    if partition_entry_count == 0 || partition_entry_size < PARTITION_ENTRY_MIN_SIZE || !partition_entry_size.is_multiple_of(8) { return Err(RecoveryError::IoFailure("invalid GPT partition entry geometry".into())); }
     Ok(GptHeader { header_size, header_crc32, current_lba: le_u64(&bytes[24..32]), backup_lba: le_u64(&bytes[32..40]), first_usable_lba: le_u64(&bytes[40..48]), last_usable_lba: le_u64(&bytes[48..56]), partition_entries_lba: le_u64(&bytes[72..80]), partition_entry_count, partition_entry_size, partition_entries_crc32: le_u32(&bytes[88..92]) })
 }
 
@@ -101,7 +101,7 @@ fn parse_table<D: BlockDevice>(device: &D, geometry: DiskGeometry, header: &GptH
 }
 
 pub fn discover_gpt<D: BlockDevice>(device: &D, geometry: DiskGeometry) -> RecoveryResult<DiscoveryResult> {
-    if geometry.logical_sector_size == 0 || device.capacity() % geometry.logical_sector_size != 0 { return Err(RecoveryError::IoFailure("device capacity is not aligned to GPT logical sector size".into())); }
+    if geometry.logical_sector_size == 0 || !device.capacity().is_multiple_of(geometry.logical_sector_size) { return Err(RecoveryError::IoFailure("device capacity is not aligned to GPT logical sector size".into())); }
     let sectors = device.capacity() / geometry.logical_sector_size;
     if sectors < 2 { return Err(RecoveryError::IoFailure("device too small for GPT".into())); }
     let primary = read_header_at(device, geometry, 1);
