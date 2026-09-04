@@ -5,7 +5,7 @@ mod allocation;
 mod directory;
 pub use active::active_file_extents;
 pub use allocation::{read_allocation_bitmap, AllocationBitmap};
-pub use directory::{read_directory, read_root_entries};
+pub use directory::{read_directory, read_root_entries, read_tree, ExFatTreeEntry};
 
 use std::collections::BTreeSet;
 
