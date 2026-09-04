@@ -8,6 +8,7 @@ members = [
   "crates/fat32-recovery",
   "crates/imaging-engine",
   "crates/platform-device",
+  "crates/exfat-recovery",
 ]
 
 [workspace.package]

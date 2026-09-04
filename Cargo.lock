@@ -18,6 +18,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "exfat-recovery"
+version = "0.1.0"
+dependencies = [
+ "recovery-core",
+ "storage-io",
+]
+
+[[package]]
 name = "fat32-recovery"
 version = "0.1.0"
 dependencies = [
