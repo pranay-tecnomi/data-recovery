@@ -71,7 +71,7 @@ mod tests {
         let mut manifest = ImageManifest::new(8);
         assert!(matches!(
             manifest.record_completed(ByteRange::new(7, 2).unwrap()),
-            Err(RecoveryError::RangeOutOfBounds { .. })
+            Err(RecoveryError::OutOfRange { .. })
         ));
     }
 }
