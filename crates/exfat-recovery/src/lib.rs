@@ -29,7 +29,7 @@ pub fn parse_directory_entry_set(entries:&[[u8;32]])->RecoveryResult<ExFatDirect
     if entries.len()!=secondary.checked_add(1).ok_or(RecoveryError::RangeOverflow)?{return Err(RecoveryError::IoFailure("exFAT secondary entry count mismatch".into()));}
     if entries.len()<2||entries[1][0]!=ENTRY_STREAM{return Err(RecoveryError::IoFailure("exFAT file entry set missing stream extension".into()));}
     let stream=&entries[1]; let name_len=usize::from(stream[3]);
-    let required_names=(name_len+14)/15;
+    let required_names=name_len.div_ceil(15);
     if secondary!=1+required_names{return Err(RecoveryError::IoFailure("exFAT filename secondary count mismatch".into()));}
     let mut units=Vec::with_capacity(name_len);
     for i in 0..required_names { let entry=&entries[2+i]; if entry[0]!=ENTRY_NAME{return Err(RecoveryError::IoFailure("exFAT filename entry missing or out of order".into()));} for j in 0..15 { if units.len()==name_len {break;} let p=2+j*2; units.push(u16::from_le_bytes([entry[p],entry[p+1]])); } }
@@ -43,9 +43,9 @@ pub fn parse_directory_entry_set(entries:&[[u8;32]])->RecoveryResult<ExFatDirect
 }
 
 pub fn parse_directory_entries(bytes:&[u8])->RecoveryResult<Vec<ExFatDirectoryEntry>>{
-    if bytes.len()%32!=0{return Err(RecoveryError::IoFailure("exFAT directory buffer is not entry-aligned".into()));}
+    if !bytes.len().is_multiple_of(32){return Err(RecoveryError::IoFailure("exFAT directory buffer is not entry-aligned".into()));}
     let mut out=Vec::new(); let mut i=0;
-    while i<bytes.len(){let mut raw=[0u8;32];raw.copy_from_slice(&bytes[i..i+32]); if raw[0]==0x00{break;} if raw[0]==ENTRY_FILE {let count=usize::from(raw[1]); let end=i.checked_add((count+1).checked_mul(32).ok_or(RecoveryError::RangeOverflow)?).ok_or(RecoveryError::RangeOverflow)?; if end>bytes.len(){return Err(RecoveryError::IoFailure("truncated exFAT file entry set".into()));} let mut set=Vec::with_capacity(count+1);for chunk in bytes[i..end].chunks_exact(32){let mut e=[0u8;32];e.copy_from_slice(chunk);set.push(e);} out.push(parse_directory_entry_set(&set)?);i=end;}else{i+=32;}}
+    while i<bytes.len(){let mut raw=[0u8;32];raw.copy_from_slice(&bytes[i..i+32]); if raw[0]==0x00{break;} if raw[0]==ENTRY_FILE {let count=usize::from(raw[1]); let end=i.checked_add((count+1).checked_mul(32).ok_or(RecoveryError::RangeOverflow)?).ok_or(RecoveryError::RangeOverflow)?; if end>bytes.len(){return Err(RecoveryError::IoFailure("truncated exFAT file entry set".into()));} let mut set=Vec::with_capacity(count+1);for chunk in bytes[i..end].as_chunks::<32>().0{let mut e=[0u8;32];e.copy_from_slice(chunk);set.push(e);} out.push(parse_directory_entry_set(&set)?);i=end;}else{i+=32;}}
     Ok(out)
 }
 

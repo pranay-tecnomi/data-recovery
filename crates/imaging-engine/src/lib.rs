@@ -132,6 +132,10 @@ impl ImagingEngine {
         }
     }
 
+    // Private helper: these parameters are a cohesive unit (source, sink, range,
+    // cancellation, reporting, progress) threaded from `image_with_progress`.
+    // A context struct would add indirection without shortening any call site.
+    #[allow(clippy::too_many_arguments)]
     fn copy_range<D: BlockDevice, S: ImageSink>(
         &self, source: &D, sink: &mut S, range: ByteRange, cancellation: &CancellationToken,
         report: &mut ImagingReport, total_bytes: u64, progress: &mut Option<&mut dyn ImagingProgress>,

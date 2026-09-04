@@ -22,11 +22,10 @@ impl ImageManifest {
         if self.source_capacity != source_capacity {
             return Err(RecoveryError::IoFailure("manifest source capacity does not match".into()));
         }
-        if let Some(expected) = &self.source_id {
-            if expected != source_id {
+        if let Some(expected) = &self.source_id
+            && expected != source_id {
                 return Err(RecoveryError::IoFailure("manifest source identity does not match".into()));
             }
-        }
         Ok(())
     }
 
@@ -52,10 +51,10 @@ impl ImageManifest {
         let mut cursor = 0;
         let mut missing = Vec::new();
         for range in self.covered_ranges() {
-            if range.offset > cursor { if let Ok(gap) = ByteRange::new(cursor, range.offset - cursor) { missing.push(gap); } }
+            if range.offset > cursor && let Ok(gap) = ByteRange::new(cursor, range.offset - cursor) { missing.push(gap); }
             cursor = range.end().unwrap_or(cursor).max(cursor);
         }
-        if cursor < self.source_capacity { if let Ok(gap) = ByteRange::new(cursor, self.source_capacity - cursor) { missing.push(gap); } }
+        if cursor < self.source_capacity && let Ok(gap) = ByteRange::new(cursor, self.source_capacity - cursor) { missing.push(gap); }
         missing
     }
 

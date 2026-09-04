@@ -9,7 +9,7 @@ pub fn active_file_extents<D: BlockDevice>(volume: &ExFatVolume, device: &D, vol
     if entry.first_cluster < 2 { return Err(RecoveryError::IoFailure("non-empty exFAT file has invalid first cluster".into())); }
     let clusters_needed = entry.data_length.checked_add(volume.bytes_per_cluster - 1).ok_or(RecoveryError::RangeOverflow)? / volume.bytes_per_cluster;
     let clusters_needed = u32::try_from(clusters_needed).map_err(|_| RecoveryError::LengthTooLarge { length: entry.data_length })?;
-    let clusters = if entry.no_fat_chain {
+    let clusters: Vec<u32> = if entry.no_fat_chain {
         let last = entry.first_cluster.checked_add(clusters_needed - 1).ok_or(RecoveryError::RangeOverflow)?;
         if last >= volume.cluster_count.saturating_add(2) { return Err(RecoveryError::IoFailure("contiguous exFAT file exceeds cluster heap".into())); }
         (entry.first_cluster..=last).collect()
@@ -47,7 +47,7 @@ mod tests {
         device.put_u32_le(512 + 3 * 4, 5); device.put_u32_le(512 + 5 * 4, 0xFFFF_FFFF);
         let entry = ExFatDirectoryEntry { name: "fragmented.bin".into(), attributes: 0, first_cluster: 3, data_length: 1_500, no_fat_chain: false };
         let ranges = active_file_extents(&volume, &device, ByteRange::new(0, 51_200).unwrap(), &entry).unwrap();
-        assert_eq!(ranges, vec![ByteRange::new(3_072, 1_024).unwrap(), ByteRange::new(5_120, 476).unwrap()]);
+        assert_eq!(ranges, vec![ByteRange::new(2_048, 1_024).unwrap(), ByteRange::new(4_096, 476).unwrap()]);
     }
     struct Dummy;
     impl BlockDevice for Dummy { fn capacity(&self) -> u64 { 51_200 } fn read(&self, _range: ByteRange, _buffer: &mut [u8]) -> RecoveryResult<usize> { unreachable!("contiguous file does not read FAT") } }

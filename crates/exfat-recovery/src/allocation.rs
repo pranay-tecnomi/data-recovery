@@ -74,7 +74,7 @@ pub fn read_allocation_bitmap<D: BlockDevice>(volume: &ExFatVolume, device: &D, 
         .map_err(|_| RecoveryError::LengthTooLarge { length: u64::MAX })?
         .checked_mul(volume.bytes_per_cluster).ok_or(RecoveryError::RangeOverflow)?;
     let root = read_clusters(volume, device, volume_range, &root_chain, root_len)?;
-    for chunk in root.chunks_exact(32) {
+    for chunk in root.as_chunks::<32>().0 {
         if chunk[0] == 0 { break; }
         if chunk[0] == ENTRY_ALLOCATION_BITMAP {
             let mut entry = [0u8; 32];
