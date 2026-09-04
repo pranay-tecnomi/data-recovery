@@ -1,5 +1,8 @@
 #![forbid(unsafe_code)]
 
+mod allocation;
+pub use allocation::{read_allocation_bitmap, AllocationBitmap};
+
 use std::collections::BTreeSet;
 
 use recovery_core::{ByteRange, RecoveryError, RecoveryResult};
@@ -17,8 +20,6 @@ pub struct ExFatVolume { pub partition_offset_sectors:u64, pub volume_length_sec
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ExFatDirectoryEntry { pub name:String, pub attributes:u16, pub first_cluster:u32, pub data_length:u64, pub no_fat_chain:bool }
 
-/// Parses one validated exFAT file entry set. The input must start with a
-/// primary file entry and contain exactly that entry's secondary entries.
 pub fn parse_directory_entry_set(entries:&[[u8;32]])->RecoveryResult<ExFatDirectoryEntry>{
     let primary=entries.first().ok_or_else(||RecoveryError::IoFailure("empty exFAT entry set".into()))?;
     if primary[0]!=ENTRY_FILE{return Err(RecoveryError::IoFailure("exFAT entry set does not start with file entry".into()));}
@@ -39,9 +40,6 @@ pub fn parse_directory_entry_set(entries:&[[u8;32]])->RecoveryResult<ExFatDirect
     Ok(ExFatDirectoryEntry{name,attributes,first_cluster,data_length,no_fat_chain:stream[1]&0x02!=0})
 }
 
-/// Parses a directory buffer containing complete 32-byte exFAT entries.
-/// Deleted/unused and unrelated entry types are ignored; malformed active
-/// file sets are rejected rather than silently desynchronizing the scan.
 pub fn parse_directory_entries(bytes:&[u8])->RecoveryResult<Vec<ExFatDirectoryEntry>>{
     if bytes.len()%32!=0{return Err(RecoveryError::IoFailure("exFAT directory buffer is not entry-aligned".into()));}
     let mut out=Vec::new(); let mut i=0;
