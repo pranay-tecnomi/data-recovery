@@ -64,7 +64,7 @@ impl ImageManifest {
         ranges.sort_by_key(|range| range.offset);
         let mut merged: Vec<ByteRange> = Vec::new();
         for range in ranges {
-            let end = match range.end() { Some(end) => end.min(self.source_capacity), None => continue };
+            let end = match range.end() { Ok(end) => end.min(self.source_capacity), Err(_) => continue };
             if end <= range.offset { continue; }
             let range = match ByteRange::new(range.offset, end - range.offset) { Ok(range) => range, Err(_) => continue };
             if let Some(last) = merged.last_mut() {
