@@ -9,11 +9,15 @@
 pub mod bitmap;
 pub mod boot;
 pub mod directory;
+pub mod extents;
 
 pub use bitmap::AllocationBitmap;
 pub use boot::{parse_volume, ExfatVolume, FIRST_CLUSTER};
 pub use directory::{
-    read_directory, DirectoryEntry, EntrySetError, ATTR_DIRECTORY,
+    cluster_chain, read_directory, DirectoryEntry, EntrySetError, ATTR_DIRECTORY,
+};
+pub use extents::{
+    deleted_candidate, stream_extents, Confidence, DeletedCandidate, ExtentState, StreamExtents,
 };
 
 #[cfg(test)]
