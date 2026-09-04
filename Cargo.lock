@@ -80,6 +80,15 @@ name = "recovery-core"
 version = "0.1.0"
 
 [[package]]
+name = "recovery-output"
+version = "0.1.0"
+dependencies = [
+ "platform-device",
+ "recovery-core",
+ "storage-io",
+]
+
+[[package]]
 name = "storage-io"
 version = "0.1.0"
 dependencies = [
