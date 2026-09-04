@@ -13,7 +13,7 @@ Sessions, progress events, chunk scheduler, signature registry.
 FAT32/exFAT analysis, selected file carvers, validation, result store.
 
 ## Phase 4 — macOS Integration
-Device discovery, authorization boundary, SwiftUI workflows.
+Device discovery, authorization boundary, Tauri workflows on macOS and Windows.
 
 ## Phase 5 — Imaging and Reliability
 Image creation, resume/checkpoints, fault injection.

@@ -2,7 +2,7 @@
 
 ```mermaid
 flowchart LR
- U[User] --> A[macOS Data Recovery App]
+ U[User] --> A[Data Recovery App: macOS and Windows]
  A --> X[Privileged XPC Helper]
  A --> R[Rust Recovery Core]
  R --> S[(Internal/External Storage)]

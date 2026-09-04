@@ -8,7 +8,7 @@
 5. candidate normalization + validation + confidence
 6. recovery-output + session persistence/resume
 7. file carving
-8. macOS physical-device/privileged integration
+8. platform physical-device/privileged integration (PlatformDevice: macOS and Windows adapters)
 9. end-to-end hardening
 
 A packet may not depend on a later layer. Shared types belong in recovery-core only when they are genuinely cross-cutting.

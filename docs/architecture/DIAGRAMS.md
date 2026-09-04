@@ -5,7 +5,7 @@
 User
   |
   v
-macOS Data Recovery Application
+Data Recovery Application (macOS and Windows)
   |--------- Internal Storage
   |--------- External Storage
   \--------- Disk Images
@@ -30,7 +30,7 @@ Source → Profile → Safety Policy
 
 ## Privilege Boundary
 ```
-SwiftUI App (unprivileged)
+Tauri App (unprivileged)
           |
           | authenticated IPC
           v

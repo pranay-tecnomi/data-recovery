@@ -4,7 +4,9 @@
 Define a minimal privileged boundary for operations that cannot safely be performed by the app process.
 
 ## Process model
-SwiftUI App → authenticated IPC/XPC → narrowly scoped Helper → approved storage operations.
+Tauri App → authenticated IPC/XPC → narrowly scoped Helper → approved storage operations.
+
+This specification covers the macOS adapter only; see WINDOWS_PLATFORM_SPECIFICATION.md for the Windows equivalent.
 
 ## Rules
 - The recovery engine is not automatically run as root.

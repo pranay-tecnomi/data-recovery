@@ -1,7 +1,7 @@
 # Coding Baseline and Module Boundaries
 
 ## Repository target
-apps/macos/ — SwiftUI presentation and orchestration
+apps/desktop/ — Tauri presentation and orchestration (macOS and Windows)
 crates/recovery-core/ — domain types and orchestration
 crates/storage-io/ — BlockDevice and platform-neutral reads
 crates/partition/ — GPT/MBR

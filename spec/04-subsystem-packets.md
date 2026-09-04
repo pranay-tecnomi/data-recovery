@@ -36,7 +36,12 @@ Destination identity safety, streaming output, collision policy, atomic checkpoi
 ## P7 Carving
 Signature registry, bounded scanner, header/footer rules, overlap policy, structural validators, confidence integration.
 
-## P8 macOS
-Read-only physical-device adapter, narrow helper API, typed XPC contract, authorization, disconnect handling.
+## P8 Platform
+Read-only physical-device adapter behind the PlatformDevice seam, narrow helper API, authorization, disconnect handling.
+P8a macOS: /dev/rdiskN, authorization-gated helper, typed XPC contract.
+P8b Windows: \\.\PhysicalDriveN and \\.\X:, UAC-elevated helper, sector-aligned read-modify-trim, reserved-name sanitisation.
+
+## P9 Desktop application
+Tauri shell hosting the ten screens defined in the UI/UX specification, dark and minimal, sharing one Rust binary across macOS and Windows.
 
 Every packet must add acceptance tests before being marked complete.

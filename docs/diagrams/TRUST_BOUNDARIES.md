@@ -3,7 +3,7 @@
 ```mermaid
 flowchart TB
  subgraph Trusted["Application Trust Zone"]
- UI[SwiftUI]
+ UI[Tauri UI]
  APP[Orchestrator]
  end
  subgraph Priv["Privileged Boundary"]

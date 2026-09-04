@@ -1,7 +1,7 @@
 # Product Requirements Document
 
 ## Vision
-Build a professional-grade macOS data recovery application capable of safely analyzing and recovering data from supported internal and external storage devices.
+Build a professional-grade cross-platform data recovery application for macOS and Windows, capable of safely analyzing and recovering data from supported internal and external storage devices. The application is installable, and runs portably where privilege requirements allow (see ADR-009).
 
 ## Core workflow
 Detect → Assess Risk → Image if Necessary → Scan → Validate → Preview → Recover

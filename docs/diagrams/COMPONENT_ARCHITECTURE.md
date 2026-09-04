@@ -2,7 +2,7 @@
 
 ```mermaid
 flowchart TB
- UI[SwiftUI] --> APP[Application Orchestrator]
+ UI[Tauri UI] --> APP[Application Orchestrator]
  APP --> FFI[FFI]
  FFI --> CORE[Recovery Core]
  CORE --> IO[Storage I/O]

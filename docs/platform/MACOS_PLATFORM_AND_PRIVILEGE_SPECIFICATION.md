@@ -1,4 +1,8 @@
-# macOS Platform, Permissions and Privileged Helper Specification
+# macOS Platform and Privilege Specification
+
+This specification covers the macOS adapter only; see
+WINDOWS_PLATFORM_SPECIFICATION.md for the Windows equivalent. Both realise the
+PlatformDevice seam defined in ADR-011.
 
 ## Principles
 Use public supported macOS mechanisms, least privilege, explicit authorization, and strict separation between UI and elevated operations.
