@@ -9,6 +9,7 @@ members = [
   "crates/imaging-engine",
   "crates/platform-device",
   "crates/exfat-recovery",
+  "crates/candidate-pipeline",
 ]
 
 [workspace.package]
