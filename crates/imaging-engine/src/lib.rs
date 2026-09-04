@@ -1,5 +1,9 @@
 #![forbid(unsafe_code)]
 
+mod manifest;
+
+pub use manifest::ImageManifest;
+
 use recovery_core::{ByteRange, CancellationToken, RecoveryError, RecoveryResult};
 use storage_io::BlockDevice;
 
