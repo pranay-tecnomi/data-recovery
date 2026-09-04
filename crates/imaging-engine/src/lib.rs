@@ -35,6 +35,11 @@ pub trait ImageSink {
     fn write(&mut self, offset: u64, data: &[u8]) -> RecoveryResult<()>;
 }
 
+pub trait ImagingProgress {
+    fn copied(&mut self, bytes_copied: u64, total_bytes: u64);
+    fn bad_range(&mut self, bad_range: BadRange);
+}
+
 pub struct ImagingEngine {
     policy: ImagingPolicy,
 }
@@ -51,6 +56,16 @@ impl ImagingEngine {
         sink: &mut S,
         cancellation: &CancellationToken,
     ) -> RecoveryResult<ImagingReport> {
+        self.image_with_progress(source, sink, cancellation, None)
+    }
+
+    pub fn image_with_progress<D: BlockDevice, S: ImageSink>(
+        &self,
+        source: &D,
+        sink: &mut S,
+        cancellation: &CancellationToken,
+        mut progress: Option<&mut dyn ImagingProgress>,
+    ) -> RecoveryResult<ImagingReport> {
         let mut report = ImagingReport::default();
         let mut offset = 0;
         let capacity = source.capacity();
@@ -60,7 +75,15 @@ impl ImagingEngine {
                 return Err(RecoveryError::Cancelled);
             }
             let length = self.policy.chunk_size.min(capacity - offset);
-            self.copy_range(source, sink, ByteRange::new(offset, length)?, cancellation, &mut report)?;
+            self.copy_range(
+                source,
+                sink,
+                ByteRange::new(offset, length)?,
+                cancellation,
+                &mut report,
+                capacity,
+                &mut progress,
+            )?;
             offset += length;
         }
         Ok(report)
@@ -73,6 +96,8 @@ impl ImagingEngine {
         range: ByteRange,
         cancellation: &CancellationToken,
         report: &mut ImagingReport,
+        total_bytes: u64,
+        progress: &mut Option<&mut dyn ImagingProgress>,
     ) -> RecoveryResult<()> {
         if cancellation.is_cancelled() {
             return Err(RecoveryError::Cancelled);
@@ -87,20 +112,27 @@ impl ImagingEngine {
                 Ok(read) if read == length => {
                     sink.write(range.offset, &buffer)?;
                     report.bytes_copied += read as u64;
+                    if let Some(progress) = progress.as_deref_mut() {
+                        progress.copied(report.bytes_copied, total_bytes);
+                    }
                     return Ok(());
                 }
                 Ok(_) | Err(_) if attempts <= self.policy.max_retries => continue,
                 Ok(_) | Err(_) if range.length > self.policy.min_chunk_size => {
                     let left_length = (range.length / 2).max(self.policy.min_chunk_size);
                     let right_length = range.length - left_length;
-                    self.copy_range(source, sink, ByteRange::new(range.offset, left_length)?, cancellation, report)?;
+                    self.copy_range(source, sink, ByteRange::new(range.offset, left_length)?, cancellation, report, total_bytes, progress)?;
                     if right_length > 0 {
-                        self.copy_range(source, sink, ByteRange::new(range.offset + left_length, right_length)?, cancellation, report)?;
+                        self.copy_range(source, sink, ByteRange::new(range.offset + left_length, right_length)?, cancellation, report, total_bytes, progress)?;
                     }
                     return Ok(());
                 }
                 Ok(_) | Err(_) => {
-                    report.bad_ranges.push(BadRange { range, attempts });
+                    let bad_range = BadRange { range, attempts };
+                    report.bad_ranges.push(bad_range);
+                    if let Some(progress) = progress.as_deref_mut() {
+                        progress.bad_range(bad_range);
+                    }
                     return Ok(());
                 }
             }
@@ -168,5 +200,21 @@ mod tests {
         let token = CancellationToken::new();
         token.cancel();
         assert_eq!(engine().image(&source, &mut sink, &token).unwrap_err(), RecoveryError::Cancelled);
+    }
+
+    #[derive(Default)]
+    struct Progress { copied: Vec<(u64, u64)> }
+    impl ImagingProgress for Progress {
+        fn copied(&mut self, bytes_copied: u64, total_bytes: u64) { self.copied.push((bytes_copied, total_bytes)); }
+        fn bad_range(&mut self, _: BadRange) {}
+    }
+
+    #[test]
+    fn reports_monotonic_copy_progress() {
+        let source = MemoryDevice(b"abcdefgh".to_vec());
+        let mut sink = MemorySink::default();
+        let mut progress = Progress::default();
+        engine().image_with_progress(&source, &mut sink, &CancellationToken::new(), Some(&mut progress)).unwrap();
+        assert_eq!(progress.copied, vec![(4, 8), (8, 8)]);
     }
 }
