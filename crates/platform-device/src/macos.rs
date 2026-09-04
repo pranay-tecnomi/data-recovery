@@ -54,6 +54,11 @@ impl MacRawDevice {
                     "macOS physical sector size must be a non-zero power of two".into(),
                 ));
             }
+            if physical < logical_sector_size || physical % logical_sector_size != 0 {
+                return Err(RecoveryError::Unsupported(
+                    "macOS physical sector size must be a multiple of logical sector size".into(),
+                ));
+            }
         }
 
         let path = path.as_ref();
@@ -116,6 +121,25 @@ impl BlockDevice for MacRawDevice {
     }
 }
 
+fn valid_disk_suffix(rest: &str) -> bool {
+    if rest.is_empty() {
+        return false;
+    }
+    let mut parts = rest.split('s');
+    let disk = parts.next().unwrap_or_default();
+    if disk.is_empty() || !disk.chars().all(|c| c.is_ascii_digit()) {
+        return false;
+    }
+    match parts.next() {
+        None => true,
+        Some(partition) => {
+            !partition.is_empty()
+                && partition.chars().all(|c| c.is_ascii_digit())
+                && parts.next().is_none()
+        }
+    }
+}
+
 /// Returns the canonical raw-device spelling used for whole-disk access.
 /// `/dev/rdiskN` is preferred on macOS because it avoids the buffered disk
 /// layer; partition paths retain their suffix (`rdiskNsM`).
@@ -123,12 +147,15 @@ pub fn raw_device_path(path: impl AsRef<Path>) -> RecoveryResult<PathBuf> {
     let path = path.as_ref();
     let value = path.to_string_lossy();
     if let Some(rest) = value.strip_prefix("/dev/disk") {
-        if rest.is_empty() || !rest.chars().all(|c| c.is_ascii_digit()) && !rest.chars().next().is_some_and(|c| c.is_ascii_digit()) {
+        if !valid_disk_suffix(rest) {
             return Err(RecoveryError::Unsupported("invalid macOS disk device path".into()));
         }
         return Ok(PathBuf::from(format!("/dev/rdisk{rest}")));
     }
-    if value.starts_with("/dev/rdisk") {
+    if let Some(rest) = value.strip_prefix("/dev/rdisk") {
+        if !valid_disk_suffix(rest) {
+            return Err(RecoveryError::Unsupported("invalid macOS raw disk device path".into()));
+        }
         return Ok(path.to_path_buf());
     }
     Err(RecoveryError::Unsupported(
@@ -149,11 +176,16 @@ mod tests {
     #[test]
     fn preserves_raw_disk() {
         assert_eq!(raw_device_path("/dev/rdisk4").unwrap(), PathBuf::from("/dev/rdisk4"));
+        assert_eq!(raw_device_path("/dev/rdisk4s2").unwrap(), PathBuf::from("/dev/rdisk4s2"));
     }
 
     #[test]
     fn rejects_non_device_paths() {
         assert!(raw_device_path("/tmp/image.dmg").is_err());
         assert!(raw_device_path("/dev/diskX").is_err());
+        assert!(raw_device_path("/dev/disk4foo").is_err());
+        assert!(raw_device_path("/dev/disk4s").is_err());
+        assert!(raw_device_path("/dev/rdisk").is_err());
+        assert!(raw_device_path("/dev/rdisk4foo").is_err());
     }
 }
