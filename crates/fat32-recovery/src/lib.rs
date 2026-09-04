@@ -2,7 +2,7 @@
 
 use std::collections::BTreeSet;
 
-use recovery_core::{ByteRange, CancellationToken, RecoveryError, RecoveryResult};
+use recovery_core::{ByteRange, CancellationToken, Extent, RecoveryError, RecoveryResult};
 use storage_io::BlockDevice;
 
 const DIR_ENTRY_SIZE: usize = 32;
@@ -144,6 +144,30 @@ impl Fat32Volume {
         Ok(Some(value))
     }
 
+    /// Resolves as much of a chain as remains valid, stopping at the first
+    /// failure instead of discarding everything.
+    ///
+    /// A damaged tail must not erase a recoverable head: the surviving prefix
+    /// is the evidence a partial candidate is built from.
+    pub fn partial_cluster_chain<D: BlockDevice>(&self, device: &D, volume_range: ByteRange, start: u32) -> Vec<u32> {
+        if start < 2 { return Vec::new(); }
+        let max = usize::try_from(self.cluster_count.min(1_000_000)).unwrap_or(usize::MAX);
+        let mut chain = Vec::new();
+        let mut seen = BTreeSet::new();
+        let mut current = start;
+        while chain.len() <= max {
+            if !seen.insert(current) { break; }
+            chain.push(current);
+            match self.next_cluster(device, volume_range, current) {
+                Ok(Some(next)) => current = next,
+                // End of chain, or a link that failed validation: either way
+                // the prefix collected so far stands.
+                Ok(None) | Err(_) => break,
+            }
+        }
+        chain
+    }
+
     pub fn cluster_chain<D: BlockDevice>(&self, device: &D, volume_range: ByteRange, start: u32) -> RecoveryResult<Vec<u32>> {
         if start < 2 { return Err(io_error("invalid starting cluster")); }
         let max = usize::try_from(self.cluster_count.min(1_000_000)).map_err(|_| io_error("cluster count too large"))?;
@@ -160,6 +184,139 @@ impl Fat32Volume {
         }
         Err(io_error("FAT32 cluster chain exceeds traversal limit"))
     }
+}
+
+
+/// How much of a file's content the extents are believed to represent.
+///
+/// Mirrors the candidate states in the FAT32 recovery specification. A state is
+/// derived from evidence, never asserted.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ExtentState {
+    /// The chain resolved cleanly and covers the declared size.
+    Recoverable,
+    /// The chain terminated early or was truncated by a traversal bound, so the
+    /// extents cover only part of the declared size.
+    PartiallyRecoverable,
+    /// No content could be located, though the directory entry survives.
+    MetadataOnly,
+}
+
+/// Extents for one file, with the evidence behind them.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FileExtents {
+    pub extents: Vec<Extent>,
+    pub state: ExtentState,
+    /// Size recorded in the directory entry. Untrusted: it may exceed or fall
+    /// short of what the chain actually provides.
+    pub declared_size: u64,
+    /// Bytes actually covered by `extents`, after trimming to declared_size.
+    pub recovered_size: u64,
+    /// Human-readable findings explaining any shortfall.
+    pub diagnostics: Vec<String>,
+}
+
+/// Resolves an active file's cluster chain into logically ordered extents.
+///
+/// The declared size bounds the result: FAT chains are allocated in whole
+/// clusters, so the final cluster is trimmed to the file's real length rather
+/// than emitting slack. A chain that ends before the declared size yields a
+/// partial candidate with diagnostics, never fabricated extents.
+pub fn file_extents<D: BlockDevice>(
+    device: &D,
+    volume: &Fat32Volume,
+    volume_range: ByteRange,
+    entry: &DirectoryEntry,
+) -> RecoveryResult<FileExtents> {
+    let declared_size = u64::from(entry.size);
+    let mut diagnostics = Vec::new();
+
+    // A directory has no meaningful byte length, so callers must walk it
+    // instead of streaming it.
+    if entry.attributes & ATTR_DIRECTORY != 0 {
+        return Err(io_error("cannot resolve file extents for a directory"));
+    }
+
+    // Cluster 0 means "no allocation": legitimately empty, or a deleted entry
+    // whose pointer was cleared.
+    if entry.first_cluster < 2 {
+        if declared_size > 0 {
+            diagnostics.push(format!(
+                "entry declares {declared_size} bytes but has no start cluster"
+            ));
+        }
+        return Ok(FileExtents {
+            extents: Vec::new(),
+            state: if declared_size == 0 { ExtentState::Recoverable } else { ExtentState::MetadataOnly },
+            declared_size,
+            recovered_size: 0,
+            diagnostics,
+        });
+    }
+
+    let cluster_size = volume.cluster_size()?;
+    // Resolve the chain, keeping whatever prefix survived a failure so a broken
+    // tail still yields a partial candidate.
+    let (chain, chain_error) = match volume.cluster_chain(device, volume_range, entry.first_cluster) {
+        Ok(chain) => (chain, None),
+        Err(error) => (
+            volume.partial_cluster_chain(device, volume_range, entry.first_cluster),
+            Some(error),
+        ),
+    };
+    if let Some(error) = chain_error {
+        diagnostics.push(format!("cluster chain did not resolve cleanly: {error:?}"));
+    }
+
+    let mut extents: Vec<Extent> = Vec::new();
+    let mut logical: u64 = 0;
+    let volume_limit = volume_end(volume_range)?;
+
+    for cluster in chain {
+        // Stop once the declared size is covered; the rest is cluster slack.
+        // A zero-length file covers nothing, so it emits no extents even when
+        // a cluster is still allocated to it.
+        if logical >= declared_size {
+            break;
+        }
+        let offset = volume.cluster_offset(volume_range.offset, cluster)?;
+        // Trim the final cluster to the declared length.
+        let length = (declared_size - logical).min(cluster_size);
+        let range = ByteRange::new(offset, length)?;
+        if range.end()? > volume_limit {
+            diagnostics.push(format!("cluster {cluster} extends outside the volume"));
+            break;
+        }
+
+        // Coalesce physically adjacent clusters into one extent so contiguous
+        // files produce a single run.
+        match extents.last_mut() {
+            Some(last) if last.source_range.end()? == offset => {
+                last.source_range = ByteRange::new(last.source_range.offset, last.source_range.length + length)?;
+            }
+            _ => extents.push(Extent::new(range, logical)?),
+        }
+        logical = logical.checked_add(length).ok_or(RecoveryError::RangeOverflow)?;
+    }
+
+    let recovered_size = recovery_core::total_length(&extents)?;
+    recovery_core::validate_logical_layout(&extents)?;
+
+    let state = if declared_size == 0 {
+        // Nothing to recover, and nothing missing.
+        ExtentState::Recoverable
+    } else if extents.is_empty() {
+        ExtentState::MetadataOnly
+    } else if recovered_size < declared_size {
+        diagnostics.push(format!(
+            "chain supplied {recovered_size} of {declared_size} declared bytes"
+        ));
+        ExtentState::PartiallyRecoverable
+    } else {
+        ExtentState::Recoverable
+    };
+
+    Ok(FileExtents { extents, state, declared_size, recovered_size, diagnostics })
 }
 
 fn short_name(entry: &[u8]) -> String {
@@ -809,5 +966,151 @@ mod tests {
         let named = entries.iter().find(|e| e.long_name.is_some()).expect("long name assembled");
         assert_eq!(named.long_name.as_deref(), Some(full));
         assert_eq!(named.short_name, "LONGNA~1.TXT");
+    }
+
+    fn vol(m: &Mem) -> (Fat32Volume, ByteRange) {
+        let r = ByteRange::new(0, m.capacity()).unwrap();
+        (parse_volume(m, r).unwrap(), r)
+    }
+
+    fn file(first_cluster: u32, size: u32) -> DirectoryEntry {
+        DirectoryEntry {
+            short_name: "F.BIN".into(), attributes: 0x20, first_cluster,
+            size, deleted: false, long_name: None,
+        }
+    }
+
+    /// Byte offset of cluster N in the test image.
+    fn cluster_at(n: u32) -> u64 { ((32 + 2 * 600) * 512 + (n as usize - 2) * 512) as u64 }
+
+    #[test]
+    fn contiguous_file_yields_one_coalesced_extent() {
+        let mut m = image();
+        // 2 -> 3 -> EOC, physically adjacent.
+        link(&mut m.0, 2, 3);
+        link(&mut m.0, 3, EOC);
+        let (v, r) = vol(&m);
+        let fx = file_extents(&m, &v, r, &file(2, 1024)).unwrap();
+        assert_eq!(fx.state, ExtentState::Recoverable);
+        // Adjacent clusters coalesce rather than emitting one extent each.
+        assert_eq!(fx.extents.len(), 1);
+        assert_eq!(fx.extents[0].source_range.offset, cluster_at(2));
+        assert_eq!(fx.extents[0].source_range.length, 1024);
+        assert_eq!(fx.recovered_size, 1024);
+    }
+
+    #[test]
+    fn fragmented_file_yields_ordered_extents() {
+        let mut m = image();
+        // 2 -> 9 -> EOC: a physical gap forces two extents.
+        link(&mut m.0, 2, 9);
+        link(&mut m.0, 9, EOC);
+        let (v, r) = vol(&m);
+        let fx = file_extents(&m, &v, r, &file(2, 1024)).unwrap();
+        assert_eq!(fx.state, ExtentState::Recoverable);
+        assert_eq!(fx.extents.len(), 2);
+        assert_eq!(fx.extents[0].logical_offset, 0);
+        assert_eq!(fx.extents[1].logical_offset, 512);
+        assert_eq!(fx.extents[1].source_range.offset, cluster_at(9));
+        // Logical space stays contiguous even though the source is not.
+        assert!(recovery_core::validate_logical_layout(&fx.extents).is_ok());
+    }
+
+    #[test]
+    fn final_cluster_is_trimmed_to_declared_size() {
+        let mut m = image();
+        link(&mut m.0, 2, 3);
+        link(&mut m.0, 3, EOC);
+        let (v, r) = vol(&m);
+        // 600 bytes spans two 512-byte clusters; the tail must not include slack.
+        let fx = file_extents(&m, &v, r, &file(2, 600)).unwrap();
+        assert_eq!(fx.recovered_size, 600);
+        assert_eq!(fx.state, ExtentState::Recoverable);
+    }
+
+    #[test]
+    fn chain_shorter_than_declared_size_is_partial() {
+        let mut m = image();
+        link(&mut m.0, 2, EOC);
+        let (v, r) = vol(&m);
+        // Declares 4096 bytes but only one 512-byte cluster is linked.
+        let fx = file_extents(&m, &v, r, &file(2, 4096)).unwrap();
+        assert_eq!(fx.state, ExtentState::PartiallyRecoverable);
+        assert_eq!(fx.recovered_size, 512);
+        assert_eq!(fx.declared_size, 4096);
+        assert!(!fx.diagnostics.is_empty());
+    }
+
+    #[test]
+    fn broken_chain_keeps_recoverable_prefix() {
+        let mut m = image();
+        // 2 -> 3 -> out-of-range cluster: the tail is invalid, the head is not.
+        link(&mut m.0, 2, 3);
+        link(&mut m.0, 3, 0x0FFF_FFF0);
+        let (v, r) = vol(&m);
+        let fx = file_extents(&m, &v, r, &file(2, 4096)).unwrap();
+        assert_eq!(fx.state, ExtentState::PartiallyRecoverable);
+        // A damaged tail must not discard the valid prefix.
+        assert_eq!(fx.recovered_size, 1024);
+        assert!(fx.diagnostics.iter().any(|d| d.contains("did not resolve cleanly")));
+    }
+
+    #[test]
+    fn looping_chain_is_bounded_and_partial() {
+        let mut m = image();
+        link(&mut m.0, 2, 3);
+        link(&mut m.0, 3, 2);
+        let (v, r) = vol(&m);
+        let fx = file_extents(&m, &v, r, &file(2, 1 << 20)).unwrap();
+        // Loop detection stops traversal; no fabricated extents beyond it.
+        assert_eq!(fx.recovered_size, 1024);
+        assert_eq!(fx.state, ExtentState::PartiallyRecoverable);
+    }
+
+    #[test]
+    fn zero_size_file_yields_no_extents() {
+        let mut m = image();
+        link(&mut m.0, 2, EOC);
+        let (v, r) = vol(&m);
+        let fx = file_extents(&m, &v, r, &file(2, 0)).unwrap();
+        assert_eq!(fx.recovered_size, 0);
+        assert_eq!(fx.state, ExtentState::Recoverable);
+    }
+
+    #[test]
+    fn entry_without_start_cluster_is_metadata_only() {
+        let m = image();
+        let (v, r) = vol(&m);
+        let fx = file_extents(&m, &v, r, &file(0, 500)).unwrap();
+        assert_eq!(fx.state, ExtentState::MetadataOnly);
+        assert!(fx.extents.is_empty());
+        assert!(!fx.diagnostics.is_empty());
+    }
+
+    #[test]
+    fn empty_entry_without_cluster_is_recoverable() {
+        let m = image();
+        let (v, r) = vol(&m);
+        // A genuinely empty file needs no allocation.
+        let fx = file_extents(&m, &v, r, &file(0, 0)).unwrap();
+        assert_eq!(fx.state, ExtentState::Recoverable);
+    }
+
+    #[test]
+    fn rejects_directory_entry() {
+        let m = image();
+        let (v, r) = vol(&m);
+        let mut dir = file(2, 0);
+        dir.attributes = ATTR_DIRECTORY;
+        assert!(file_extents(&m, &v, r, &dir).is_err());
+    }
+
+    #[test]
+    fn out_of_range_start_cluster_is_rejected() {
+        let m = image();
+        let (v, r) = vol(&m);
+        // A cluster beyond the data region must never produce a read.
+        let fx = file_extents(&m, &v, r, &file(0x0FFF_FFF0, 512));
+        assert!(fx.is_err() || fx.unwrap().extents.is_empty());
     }
 }
