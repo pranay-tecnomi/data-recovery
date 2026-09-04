@@ -12,6 +12,7 @@ members = [
   "crates/candidate-pipeline",
   "crates/recovery-output",
   "crates/file-carving",
+  "crates/integration-tests",
 ]
 
 [workspace.package]

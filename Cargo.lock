@@ -66,6 +66,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "integration-tests"
+version = "0.1.0"
+dependencies = [
+ "candidate-pipeline",
+ "exfat-recovery",
+ "fat32-recovery",
+ "file-carving",
+ "filesystem-probe",
+ "partition-discovery",
+ "platform-device",
+ "recovery-core",
+ "recovery-output",
+ "storage-io",
+]
+
+[[package]]
 name = "partition-discovery"
 version = "0.1.0"
 dependencies = [
