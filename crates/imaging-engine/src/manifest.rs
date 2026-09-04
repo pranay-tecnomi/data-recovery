@@ -14,8 +14,14 @@ impl ImageManifest {
     }
 
     pub fn record_completed(&mut self, range: ByteRange) -> RecoveryResult<()> {
-        range.validate_within(self.source_capacity)?;
-        self.completed_ranges.push(range);
+        self.record_completed_batch(&[range])
+    }
+
+    pub fn record_completed_batch(&mut self, ranges: &[ByteRange]) -> RecoveryResult<()> {
+        for range in ranges {
+            range.validate_within(self.source_capacity)?;
+        }
+        self.completed_ranges.extend_from_slice(ranges);
         Ok(())
     }
 
@@ -29,31 +35,23 @@ impl ImageManifest {
         self.missing_ranges().is_empty()
     }
 
+    pub fn completed_bytes(&self) -> u64 {
+        self.covered_ranges().iter().map(|range| range.length).sum()
+    }
+
     pub fn missing_ranges(&self) -> Vec<ByteRange> {
         if self.source_capacity == 0 {
             return Vec::new();
         }
-        let mut ranges = self.completed_ranges.clone();
-        ranges.sort_by_key(|range| range.offset);
         let mut cursor = 0;
         let mut missing = Vec::new();
-        for range in ranges {
-            let end = match range.end() {
-                Some(end) => end.min(self.source_capacity),
-                None => continue,
-            };
-            if end <= cursor {
-                continue;
-            }
+        for range in self.covered_ranges() {
             if range.offset > cursor {
                 if let Ok(gap) = ByteRange::new(cursor, range.offset - cursor) {
                     missing.push(gap);
                 }
             }
-            cursor = cursor.max(end);
-            if cursor >= self.source_capacity {
-                break;
-            }
+            cursor = range.end().unwrap_or(cursor).max(cursor);
         }
         if cursor < self.source_capacity {
             if let Ok(gap) = ByteRange::new(cursor, self.source_capacity - cursor) {
@@ -61,6 +59,35 @@ impl ImageManifest {
             }
         }
         missing
+    }
+
+    fn covered_ranges(&self) -> Vec<ByteRange> {
+        let mut ranges = self.completed_ranges.clone();
+        ranges.sort_by_key(|range| range.offset);
+        let mut merged: Vec<ByteRange> = Vec::new();
+        for range in ranges {
+            let end = match range.end() {
+                Some(end) => end.min(self.source_capacity),
+                None => continue,
+            };
+            if end <= range.offset {
+                continue;
+            }
+            let range = match ByteRange::new(range.offset, end - range.offset) {
+                Ok(range) => range,
+                Err(_) => continue,
+            };
+            if let Some(last) = merged.last_mut() {
+                let last_end = last.end().unwrap();
+                if range.offset <= last_end {
+                    let merged_end = last_end.max(range.end().unwrap());
+                    *last = ByteRange::new(last.offset, merged_end - last.offset).unwrap();
+                    continue;
+                }
+            }
+            merged.push(range);
+        }
+        merged
     }
 
     pub fn from_report(source_capacity: u64, report: &ImagingReport) -> Self {
@@ -79,6 +106,7 @@ mod tests {
         assert!(!manifest.is_complete());
         manifest.record_completed(ByteRange::new(0, 4).unwrap()).unwrap();
         assert!(manifest.is_complete());
+        assert_eq!(manifest.completed_bytes(), 8);
     }
 
     #[test]
@@ -97,11 +125,20 @@ mod tests {
     }
 
     #[test]
-    fn overlapping_completed_ranges_do_not_create_false_gaps() {
+    fn overlapping_completed_ranges_are_counted_once() {
         let mut manifest = ImageManifest::new(8);
         manifest.record_completed(ByteRange::new(0, 6).unwrap()).unwrap();
         manifest.record_completed(ByteRange::new(4, 4).unwrap()).unwrap();
         assert!(manifest.missing_ranges().is_empty());
+        assert_eq!(manifest.completed_bytes(), 8);
+    }
+
+    #[test]
+    fn batch_rejects_without_partial_mutation() {
+        let mut manifest = ImageManifest::new(8);
+        let ranges = [ByteRange::new(0, 4).unwrap(), ByteRange::new(7, 2).unwrap()];
+        assert!(manifest.record_completed_batch(&ranges).is_err());
+        assert!(manifest.completed_ranges.is_empty());
     }
 
     #[test]
