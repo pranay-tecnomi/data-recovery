@@ -75,7 +75,7 @@ fn quality(candidate: &FileCandidate) -> (u8, u8, u64) {
 /// may still want to see.
 pub fn deduplicate(mut candidates: Vec<FileCandidate>) -> Vec<FileCandidate> {
     // Strongest first, so the first candidate seen for an identity wins.
-    candidates.sort_by(|a, b| quality(b).cmp(&quality(a)));
+    candidates.sort_by_key(|c| std::cmp::Reverse(quality(c)));
 
     let mut seen: Vec<(u64, u64)> = Vec::new();
     let mut out = Vec::new();
