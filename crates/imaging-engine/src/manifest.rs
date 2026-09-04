@@ -26,26 +26,41 @@ impl ImageManifest {
     }
 
     pub fn is_complete(&self) -> bool {
+        self.missing_ranges().is_empty()
+    }
+
+    pub fn missing_ranges(&self) -> Vec<ByteRange> {
         if self.source_capacity == 0 {
-            return true;
+            return Vec::new();
         }
         let mut ranges = self.completed_ranges.clone();
         ranges.sort_by_key(|range| range.offset);
         let mut cursor = 0;
+        let mut missing = Vec::new();
         for range in ranges {
-            if range.offset > cursor {
-                return false;
-            }
             let end = match range.end() {
-                Some(end) => end,
-                None => return false,
+                Some(end) => end.min(self.source_capacity),
+                None => continue,
             };
+            if end <= cursor {
+                continue;
+            }
+            if range.offset > cursor {
+                if let Ok(gap) = ByteRange::new(cursor, range.offset - cursor) {
+                    missing.push(gap);
+                }
+            }
             cursor = cursor.max(end);
             if cursor >= self.source_capacity {
-                return true;
+                break;
             }
         }
-        false
+        if cursor < self.source_capacity {
+            if let Ok(gap) = ByteRange::new(cursor, self.source_capacity - cursor) {
+                missing.push(gap);
+            }
+        }
+        missing
     }
 
     pub fn from_report(source_capacity: u64, report: &ImagingReport) -> Self {
@@ -64,6 +79,29 @@ mod tests {
         assert!(!manifest.is_complete());
         manifest.record_completed(ByteRange::new(0, 4).unwrap()).unwrap();
         assert!(manifest.is_complete());
+    }
+
+    #[test]
+    fn reports_gaps_for_resume() {
+        let mut manifest = ImageManifest::new(12);
+        manifest.record_completed(ByteRange::new(2, 2).unwrap()).unwrap();
+        manifest.record_completed(ByteRange::new(6, 4).unwrap()).unwrap();
+        assert_eq!(
+            manifest.missing_ranges(),
+            vec![
+                ByteRange::new(0, 2).unwrap(),
+                ByteRange::new(4, 2).unwrap(),
+                ByteRange::new(10, 2).unwrap(),
+            ]
+        );
+    }
+
+    #[test]
+    fn overlapping_completed_ranges_do_not_create_false_gaps() {
+        let mut manifest = ImageManifest::new(8);
+        manifest.record_completed(ByteRange::new(0, 6).unwrap()).unwrap();
+        manifest.record_completed(ByteRange::new(4, 4).unwrap()).unwrap();
+        assert!(manifest.missing_ranges().is_empty());
     }
 
     #[test]
