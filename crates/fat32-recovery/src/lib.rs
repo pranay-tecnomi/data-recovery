@@ -168,6 +168,19 @@ impl Fat32Volume {
         chain
     }
 
+    /// Whether the FAT marks `cluster` as in use.
+    ///
+    /// Deletion frees a file's clusters, so a cluster that is allocated again
+    /// now holds another file's data.
+    pub fn cluster_is_allocated<D: BlockDevice>(&self, device: &D, volume_range: ByteRange, cluster: u32) -> RecoveryResult<bool> {
+        let offset = self.fat_offset(volume_range.offset, cluster)?;
+        let end = offset.checked_add(4).ok_or(RecoveryError::RangeOverflow)?;
+        if end > volume_end(volume_range)? { return Err(io_error("FAT entry outside volume")); }
+        let mut raw = [0u8; 4];
+        read_exact(device, ByteRange::new(offset, 4)?, &mut raw)?;
+        Ok(u32::from_le_bytes(raw) & 0x0FFF_FFFF != 0)
+    }
+
     pub fn cluster_chain<D: BlockDevice>(&self, device: &D, volume_range: ByteRange, start: u32) -> RecoveryResult<Vec<u32>> {
         if start < 2 { return Err(io_error("invalid starting cluster")); }
         let max = usize::try_from(self.cluster_count.min(1_000_000)).map_err(|_| io_error("cluster count too large"))?;
@@ -317,6 +330,146 @@ pub fn file_extents<D: BlockDevice>(
     };
 
     Ok(FileExtents { extents, state, declared_size, recovered_size, diagnostics })
+}
+
+
+/// Evidence class for a recovered candidate, per the confidence specification.
+/// Derived from evidence; never asserted directly.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Confidence {
+    High,
+    Medium,
+    Low,
+    Unknown,
+}
+
+/// A deleted-file candidate with the evidence behind its classification.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DeletedCandidate {
+    /// Name with the lost first character represented by `?`. FAT overwrites
+    /// the first byte of a deleted entry's short name with 0xE5.
+    pub short_name: String,
+    /// Long name, when a checksum-consistent LFN set survived. Unlike the
+    /// short name, this is complete: LFN entries do not lose a character.
+    pub long_name: Option<String>,
+    pub first_cluster: u32,
+    pub declared_size: u64,
+    pub extents: Vec<Extent>,
+    pub state: ExtentState,
+    pub confidence: Confidence,
+    /// Append-only reasons supporting the classification, so the UI can
+    /// explain it rather than showing an invented percentage.
+    pub evidence: Vec<String>,
+}
+
+/// Reconstructs a candidate from a deleted directory entry.
+///
+/// Deleting a FAT32 file clears its FAT chain, so allocation cannot be
+/// followed. Where the required clusters are still free, contiguous allocation
+/// is inferred; the specification requires this be treated as explicitly
+/// low-confidence and validated. A cluster that has since been reallocated is
+/// evidence of overwrite and truncates the candidate.
+pub fn deleted_candidate<D: BlockDevice>(
+    device: &D,
+    volume: &Fat32Volume,
+    volume_range: ByteRange,
+    entry: &DirectoryEntry,
+) -> RecoveryResult<DeletedCandidate> {
+    if !entry.deleted {
+        return Err(io_error("entry is not deleted"));
+    }
+    let declared_size = u64::from(entry.size);
+    let mut evidence = Vec::new();
+    // The 0xE5 tombstone destroyed the first character; mark it rather than
+    // guessing a replacement.
+    let short_name = format!("?{}", entry.short_name.get(1..).unwrap_or(""));
+
+    if entry.long_name.is_some() {
+        evidence.push("long name recovered from checksum-consistent LFN set".into());
+    }
+
+    if entry.first_cluster < 2 || declared_size == 0 {
+        evidence.push("directory entry survives but no content is locatable".into());
+        return Ok(DeletedCandidate {
+            short_name, long_name: entry.long_name.clone(), first_cluster: entry.first_cluster,
+            declared_size, extents: Vec::new(), state: ExtentState::MetadataOnly,
+            confidence: Confidence::Unknown, evidence,
+        });
+    }
+
+    let cluster_size = volume.cluster_size()?;
+    let needed = declared_size.div_ceil(cluster_size);
+    let volume_limit = volume_end(volume_range)?;
+
+    let mut extents: Vec<Extent> = Vec::new();
+    let mut logical: u64 = 0;
+    let mut allocated_stop = false;
+
+    for index in 0..needed {
+        let cluster = u32::try_from(u64::from(entry.first_cluster) + index)
+            .map_err(|_| io_error("inferred cluster number overflow"))?;
+        // Stop at the end of the data region rather than reading past it.
+        if u64::from(cluster) >= volume.cluster_count.saturating_add(2) {
+            evidence.push("inferred run reaches the end of the data region".into());
+            break;
+        }
+        // A cluster now in use belongs to a live file; treating it as ours
+        // would fabricate content.
+        if volume.cluster_is_allocated(device, volume_range, cluster).unwrap_or(false) {
+            evidence.push(format!("cluster {cluster} has been reallocated; content is overwritten"));
+            allocated_stop = true;
+            break;
+        }
+        let offset = volume.cluster_offset(volume_range.offset, cluster)?;
+        let length = (declared_size - logical).min(cluster_size);
+        let range = ByteRange::new(offset, length)?;
+        if range.end()? > volume_limit {
+            evidence.push("inferred run extends outside the volume".into());
+            break;
+        }
+        match extents.last_mut() {
+            Some(last) if last.source_range.end()? == offset => {
+                last.source_range = ByteRange::new(last.source_range.offset, last.source_range.length + length)?;
+            }
+            _ => extents.push(Extent::new(range, logical)?),
+        }
+        logical = logical.checked_add(length).ok_or(RecoveryError::RangeOverflow)?;
+    }
+
+    let recovered = recovery_core::total_length(&extents)?;
+    recovery_core::validate_logical_layout(&extents)?;
+
+    let state = if extents.is_empty() {
+        ExtentState::MetadataOnly
+    } else if recovered < declared_size {
+        ExtentState::PartiallyRecoverable
+    } else {
+        ExtentState::Recoverable
+    };
+
+    // Contiguity is inferred, never observed: the FAT chain is gone. The
+    // specification requires this remain low-confidence pending content
+    // validation, which runs later in the pipeline.
+    evidence.push(format!(
+        "cluster chain cleared by deletion; contiguous allocation inferred across {needed} cluster(s)"
+    ));
+    if needed > 1 {
+        evidence.push("multi-cluster file may have been fragmented; contiguity is unverified".into());
+    }
+
+    let confidence = match state {
+        ExtentState::MetadataOnly => Confidence::Unknown,
+        ExtentState::PartiallyRecoverable => Confidence::Low,
+        // A single-cluster file cannot be fragmented, so inference is sound;
+        // still Medium at best until content validation runs.
+        ExtentState::Recoverable if needed == 1 && !allocated_stop => Confidence::Medium,
+        ExtentState::Recoverable => Confidence::Low,
+    };
+
+    Ok(DeletedCandidate {
+        short_name, long_name: entry.long_name.clone(), first_cluster: entry.first_cluster,
+        declared_size, extents, state, confidence, evidence,
+    })
 }
 
 fn short_name(entry: &[u8]) -> String {
@@ -1112,5 +1265,123 @@ mod tests {
         // A cluster beyond the data region must never produce a read.
         let fx = file_extents(&m, &v, r, &file(0x0FFF_FFF0, 512));
         assert!(fx.is_err() || fx.unwrap().extents.is_empty());
+    }
+
+    fn deleted_file(first_cluster: u32, size: u32) -> DirectoryEntry {
+        DirectoryEntry {
+            short_name: "?ELETED.BIN".into(), attributes: 0x20, first_cluster,
+            size, deleted: true, long_name: None,
+        }
+    }
+
+    #[test]
+    fn deleted_single_cluster_file_is_medium_confidence() {
+        let m = image();
+        let (v, r) = vol(&m);
+        // Cluster 5 is free; a single-cluster file cannot be fragmented.
+        let c = deleted_candidate(&m, &v, r, &deleted_file(5, 300)).unwrap();
+        assert_eq!(c.state, ExtentState::Recoverable);
+        assert_eq!(c.confidence, Confidence::Medium);
+        assert_eq!(c.extents.len(), 1);
+        assert_eq!(c.extents[0].source_range.length, 300);
+    }
+
+    #[test]
+    fn deleted_multi_cluster_file_is_low_confidence() {
+        let m = image();
+        let (v, r) = vol(&m);
+        // Spanning clusters means contiguity is assumed, not observed.
+        let c = deleted_candidate(&m, &v, r, &deleted_file(5, 2000)).unwrap();
+        assert_eq!(c.state, ExtentState::Recoverable);
+        assert_eq!(c.confidence, Confidence::Low);
+        assert!(c.evidence.iter().any(|e| e.contains("fragmented")));
+    }
+
+    #[test]
+    fn reallocated_cluster_truncates_candidate() {
+        let mut m = image();
+        // Cluster 6 is back in use, so it holds another file's data now.
+        link(&mut m.0, 6, EOC);
+        let (v, r) = vol(&m);
+        let c = deleted_candidate(&m, &v, r, &deleted_file(5, 2000)).unwrap();
+        assert_eq!(c.state, ExtentState::PartiallyRecoverable);
+        assert_eq!(c.confidence, Confidence::Low);
+        // Only the one free cluster before the reallocation is claimed.
+        assert_eq!(c.extents[0].source_range.length, 512);
+        assert!(c.evidence.iter().any(|e| e.contains("overwritten")));
+    }
+
+    #[test]
+    fn immediately_reallocated_file_yields_no_extents() {
+        let mut m = image();
+        link(&mut m.0, 5, EOC);
+        let (v, r) = vol(&m);
+        let c = deleted_candidate(&m, &v, r, &deleted_file(5, 512)).unwrap();
+        assert_eq!(c.state, ExtentState::MetadataOnly);
+        assert_eq!(c.confidence, Confidence::Unknown);
+        assert!(c.extents.is_empty());
+    }
+
+    #[test]
+    fn deleted_entry_without_cluster_is_metadata_only() {
+        let m = image();
+        let (v, r) = vol(&m);
+        let c = deleted_candidate(&m, &v, r, &deleted_file(0, 400)).unwrap();
+        assert_eq!(c.state, ExtentState::MetadataOnly);
+        assert_eq!(c.confidence, Confidence::Unknown);
+    }
+
+    #[test]
+    fn lost_first_character_is_marked_not_guessed() {
+        let m = image();
+        let (v, r) = vol(&m);
+        let c = deleted_candidate(&m, &v, r, &deleted_file(5, 100)).unwrap();
+        // The 0xE5 tombstone destroyed it; never invent a replacement.
+        assert!(c.short_name.starts_with('?'));
+    }
+
+    #[test]
+    fn recovered_long_name_is_reported_as_evidence() {
+        let m = image();
+        let (v, r) = vol(&m);
+        let mut e = deleted_file(5, 100);
+        e.long_name = Some("Quarterly Report.pdf".into());
+        let c = deleted_candidate(&m, &v, r, &e).unwrap();
+        assert_eq!(c.long_name.as_deref(), Some("Quarterly Report.pdf"));
+        assert!(c.evidence.iter().any(|x| x.contains("long name recovered")));
+    }
+
+    #[test]
+    fn rejects_active_entry() {
+        let m = image();
+        let (v, r) = vol(&m);
+        assert!(deleted_candidate(&m, &v, r, &file(5, 100)).is_err());
+    }
+
+    #[test]
+    fn inferred_run_stops_at_end_of_data_region() {
+        let m = image();
+        let (v, r) = vol(&m);
+        // Start near the last cluster and declare more than remains.
+        let last = u32::try_from(v.cluster_count).unwrap();
+        let c = deleted_candidate(&m, &v, r, &deleted_file(last, 1 << 20)).unwrap();
+        // Never reads past the data region.
+        for e in &c.extents {
+            assert!(e.source_range.end().unwrap() <= r.end().unwrap());
+        }
+        assert_ne!(c.confidence, Confidence::High);
+    }
+
+    #[test]
+    fn every_candidate_carries_explanatory_evidence() {
+        let m = image();
+        let (v, r) = vol(&m);
+        for entry in [deleted_file(5, 100), deleted_file(5, 5000), deleted_file(0, 10)] {
+            let c = deleted_candidate(&m, &v, r, &entry).unwrap();
+            // The UI must be able to explain every classification.
+            assert!(!c.evidence.is_empty());
+            // Inference alone never earns High confidence.
+            assert_ne!(c.confidence, Confidence::High);
+        }
     }
 }
