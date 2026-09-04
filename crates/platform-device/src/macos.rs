@@ -30,6 +30,10 @@ impl MacRawDevice {
     /// `capacity` and sector sizes come from platform enumeration rather than
     /// filesystem metadata. The path is retained only for display/opening;
     /// `source_id` is the stable identity used by recovery state.
+    // Enumeration supplies every field individually; grouping them into a
+    // descriptor struct is worth doing but changes a public signature, so the
+    // arity lint is allowed until that refactor is scheduled.
+    #[allow(clippy::too_many_arguments)]
     pub fn open(
         path: impl AsRef<Path>,
         source_id: SourceId,
