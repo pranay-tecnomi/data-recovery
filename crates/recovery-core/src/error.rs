@@ -6,6 +6,15 @@ pub enum RecoveryError {
     OutputBufferTooSmall { required: usize, provided: usize },
     Cancelled,
     PermissionDenied,
+    /// The source went away mid-operation (removable media unplugged).
+    /// Resume requires revalidating source identity.
+    Disconnected,
+    /// A read that may succeed if retried; the scheduler owns retry policy.
+    TransientReadFailure(String),
+    /// A read that will not succeed on retry (media defect).
+    PermanentReadFailure(String),
+    /// The operation is not supported by this platform or source kind.
+    Unsupported(String),
     IoFailure(String),
 }
 

@@ -7,6 +7,7 @@ members = [
   "crates/filesystem-probe",
   "crates/fat32-recovery",
   "crates/imaging-engine",
+  "crates/platform-device",
 ]
 
 [workspace.package]
