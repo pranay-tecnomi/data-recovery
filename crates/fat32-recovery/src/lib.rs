@@ -2,12 +2,13 @@
 
 use std::collections::BTreeSet;
 
-use recovery_core::{ByteRange, RecoveryError, RecoveryResult};
+use recovery_core::{ByteRange, CancellationToken, RecoveryError, RecoveryResult};
 use storage_io::BlockDevice;
 
 const DIR_ENTRY_SIZE: usize = 32;
 const END_OF_DIRECTORY: u8 = 0x00;
 const DELETED: u8 = 0xE5;
+const ATTR_DIRECTORY: u8 = 0x10;
 const LFN_ATTR: u8 = 0x0F;
 const LFN_LAST_MASK: u8 = 0x40;
 const LFN_ORDER_MASK: u8 = 0x1F;
@@ -308,24 +309,135 @@ fn parse_directory_bytes(data: &[u8], include_deleted: bool, entries: &mut Vec<D
     }
 }
 
-pub fn read_root_entries<D: BlockDevice>(device: &D, volume_range: ByteRange, include_deleted: bool) -> RecoveryResult<Vec<DirectoryEntry>> {
-    let volume = parse_volume(device, volume_range)?;
+/// Reads the directory starting at `start_cluster`, following its cluster
+/// chain. Entries are parsed as one stream so a long-name set spanning a
+/// cluster boundary still assembles.
+pub fn read_directory<D: BlockDevice>(
+    device: &D,
+    volume: &Fat32Volume,
+    volume_range: ByteRange,
+    start_cluster: u32,
+    include_deleted: bool,
+) -> RecoveryResult<Vec<DirectoryEntry>> {
     let cluster_size = volume.cluster_size()?;
-    if cluster_size > MAX_METADATA_CLUSTER_SIZE { return Err(io_error("FAT32 cluster exceeds metadata read limit")); }
-    let chain = volume.cluster_chain(device, volume_range, volume.root_cluster)?;
-    let mut entries = Vec::new();
+    if cluster_size > MAX_METADATA_CLUSTER_SIZE {
+        return Err(io_error("FAT32 cluster exceeds metadata read limit"));
+    }
+    let cluster_len = usize::try_from(cluster_size).map_err(|_| io_error("cluster too large"))?;
+    let chain = volume.cluster_chain(device, volume_range, start_cluster)?;
+
+    let mut data = Vec::new();
     for cluster in chain {
         let offset = volume.cluster_offset(volume_range.offset, cluster)?;
         let range = ByteRange::new(offset, cluster_size)?;
-        if range.end()? > volume_end(volume_range)? { return Err(io_error("directory cluster outside volume")); }
-        let mut data = vec![0u8; usize::try_from(cluster_size).map_err(|_| io_error("cluster too large"))?];
-        read_exact(device, range, &mut data)?;
-        let before = entries.len();
-        parse_directory_bytes(&data, include_deleted, &mut entries);
-        if data.as_chunks::<DIR_ENTRY_SIZE>().0.iter().any(|e| e[0] == END_OF_DIRECTORY) { break; }
-        if entries.len() < before { return Err(io_error("directory entry accounting failure")); }
+        if range.end()? > volume_end(volume_range)? {
+            return Err(io_error("directory cluster outside volume"));
+        }
+        let start = data.len();
+        data.resize(start + cluster_len, 0);
+        read_exact(device, range, &mut data[start..])?;
+        // Stop once the end-of-directory marker is present in this cluster.
+        if data[start..].as_chunks::<DIR_ENTRY_SIZE>().0.iter().any(|e| e[0] == END_OF_DIRECTORY) {
+            break;
+        }
     }
+
+    let mut entries = Vec::new();
+    parse_directory_bytes(&data, include_deleted, &mut entries);
     Ok(entries)
+}
+
+pub fn read_root_entries<D: BlockDevice>(device: &D, volume_range: ByteRange, include_deleted: bool) -> RecoveryResult<Vec<DirectoryEntry>> {
+    let volume = parse_volume(device, volume_range)?;
+    read_directory(device, &volume, volume_range, volume.root_cluster, include_deleted)
+}
+
+/// A directory entry paired with its full path from the volume root.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WalkedEntry {
+    /// Path components from the root, ending with this entry's name.
+    pub path: Vec<String>,
+    pub entry: DirectoryEntry,
+}
+
+impl WalkedEntry {
+    pub fn is_directory(&self) -> bool {
+        self.entry.attributes & ATTR_DIRECTORY != 0
+    }
+
+    /// Display path joined with `/`.
+    pub fn display_path(&self) -> String {
+        self.path.join("/")
+    }
+}
+
+/// Bounds applied to a recursive walk so hostile or corrupted metadata cannot
+/// drive unbounded work.
+#[derive(Clone, Copy, Debug)]
+pub struct WalkLimits {
+    pub max_depth: usize,
+    pub max_entries: usize,
+}
+
+impl Default for WalkLimits {
+    fn default() -> Self {
+        Self { max_depth: 64, max_entries: 100_000 }
+    }
+}
+
+/// Recursively walks the directory tree from the root.
+///
+/// Traversal is bounded by `limits` and by a visited-cluster set, so cyclic
+/// `..`-style links or a corrupted chain cannot loop forever. A subdirectory
+/// that fails to parse is skipped rather than aborting the whole walk, since
+/// partial results are the point of recovery.
+pub fn walk<D: BlockDevice>(
+    device: &D,
+    volume_range: ByteRange,
+    include_deleted: bool,
+    limits: WalkLimits,
+    cancel: &CancellationToken,
+) -> RecoveryResult<Vec<WalkedEntry>> {
+    let volume = parse_volume(device, volume_range)?;
+    let mut out = Vec::new();
+    let mut visited = BTreeSet::new();
+    visited.insert(volume.root_cluster);
+    let mut stack = vec![(volume.root_cluster, Vec::<String>::new(), 0usize)];
+
+    while let Some((cluster, prefix, depth)) = stack.pop() {
+        cancel.check()?;
+        let entries = match read_directory(device, &volume, volume_range, cluster, include_deleted) {
+            Ok(entries) => entries,
+            // A damaged subdirectory must not discard the rest of the tree.
+            Err(_) => continue,
+        };
+        for entry in entries {
+            if out.len() >= limits.max_entries {
+                return Ok(out);
+            }
+            let name = entry.name().to_string();
+            // Self and parent links would otherwise re-enter the tree.
+            if name == "." || name == ".." {
+                continue;
+            }
+            let mut path = prefix.clone();
+            path.push(name);
+            let is_dir = entry.attributes & ATTR_DIRECTORY != 0;
+            let first_cluster = entry.first_cluster;
+            // A deleted directory's chain is not trustworthy, so do not descend.
+            let descend = is_dir && !entry.deleted;
+            out.push(WalkedEntry { path: path.clone(), entry });
+
+            if descend
+                && depth + 1 < limits.max_depth
+                && first_cluster >= 2
+                && visited.insert(first_cluster)
+            {
+                stack.push((first_cluster, path, depth + 1));
+            }
+        }
+    }
+    Ok(out)
 }
 
 #[cfg(test)]
@@ -568,5 +680,134 @@ mod tests {
         d.extend_from_slice(&lfn_entry(1, true, sum, &utf16(full)));
         d.extend_from_slice(&short_entry(name));
         assert_eq!(parse(&d)[0].long_name.as_deref(), Some(full));
+    }
+
+    /// Writes a 32-byte entry into cluster `cluster` at entry slot `slot`.
+    fn put(b: &mut [u8], cluster: u32, slot: usize, entry: &[u8; 32]) {
+        let off = (32 + 2 * 600) * 512 + (cluster as usize - 2) * 512 + slot * 32;
+        b[off..off + 32].copy_from_slice(entry);
+    }
+
+    fn dir_entry(name: &[u8; 11], cluster: u32) -> [u8; 32] {
+        let mut e = short_entry(name);
+        e[11] = ATTR_DIRECTORY;
+        e[20..22].copy_from_slice(&((cluster >> 16) as u16).to_le_bytes());
+        e[26..28].copy_from_slice(&(cluster as u16).to_le_bytes());
+        e
+    }
+
+    fn link(b: &mut [u8], cluster: u32, next: u32) {
+        let off = 32 * 512 + cluster as usize * 4;
+        b[off..off + 4].copy_from_slice(&next.to_le_bytes());
+    }
+
+    const EOC: u32 = 0x0FFF_FFFF;
+
+    /// Root (cluster 2) holds SUB/ pointing at cluster 4; cluster 4 holds a file.
+    fn tree_image() -> Mem {
+        let mut m = image();
+        // Root occupies clusters 2->3; truncate to cluster 2 alone for clarity.
+        link(&mut m.0, 2, EOC);
+        for slot in 0..8 { put(&mut m.0, 2, slot, &[0u8; 32]); }
+        put(&mut m.0, 2, 0, &dir_entry(b"SUB        ", 4));
+        link(&mut m.0, 4, EOC);
+        put(&mut m.0, 4, 0, &short_entry(b"INNER   TXT"));
+        m
+    }
+
+    fn walk_all(m: &Mem) -> Vec<WalkedEntry> {
+        walk(m, ByteRange::new(0, m.capacity()).unwrap(), false,
+             WalkLimits::default(), &CancellationToken::default()).unwrap()
+    }
+
+    #[test]
+    fn walks_into_subdirectories() {
+        let paths: Vec<String> = walk_all(&tree_image()).iter().map(|e| e.display_path()).collect();
+        assert!(paths.contains(&"SUB".to_string()), "{paths:?}");
+        assert!(paths.contains(&"SUB/INNER.TXT".to_string()), "{paths:?}");
+    }
+
+    #[test]
+    fn walk_terminates_on_self_referential_directory() {
+        let mut m = tree_image();
+        // Point SUB's child at SUB itself; the visited set must stop the cycle.
+        put(&mut m.0, 4, 0, &dir_entry(b"LOOP       ", 4));
+        let entries = walk_all(&m);
+        assert!(entries.iter().any(|e| e.display_path() == "SUB/LOOP"));
+        // LOOP is never descended into, so no deeper path exists.
+        assert!(!entries.iter().any(|e| e.display_path().starts_with("SUB/LOOP/")));
+    }
+
+    #[test]
+    fn walk_skips_dot_entries() {
+        let mut m = tree_image();
+        put(&mut m.0, 4, 1, &dir_entry(b".          ", 4));
+        put(&mut m.0, 4, 2, &dir_entry(b"..         ", 2));
+        let entries = walk_all(&m);
+        assert!(!entries.iter().any(|e| e.path.last().unwrap() == "." || e.path.last().unwrap() == ".."));
+    }
+
+    #[test]
+    fn walk_respects_depth_limit() {
+        let m = tree_image();
+        let entries = walk(&m, ByteRange::new(0, m.capacity()).unwrap(), false,
+                           WalkLimits { max_depth: 1, ..WalkLimits::default() },
+                           &CancellationToken::default()).unwrap();
+        // Depth 1 yields SUB but never descends into it.
+        assert!(entries.iter().any(|e| e.display_path() == "SUB"));
+        assert!(!entries.iter().any(|e| e.display_path() == "SUB/INNER.TXT"));
+    }
+
+    #[test]
+    fn walk_respects_entry_limit() {
+        let m = tree_image();
+        let entries = walk(&m, ByteRange::new(0, m.capacity()).unwrap(), false,
+                           WalkLimits { max_entries: 1, ..WalkLimits::default() },
+                           &CancellationToken::default()).unwrap();
+        assert_eq!(entries.len(), 1);
+    }
+
+    #[test]
+    fn walk_honours_cancellation() {
+        let m = tree_image();
+        let token = CancellationToken::default();
+        token.cancel();
+        let result = walk(&m, ByteRange::new(0, m.capacity()).unwrap(), false,
+                          WalkLimits::default(), &token);
+        assert_eq!(result, Err(RecoveryError::Cancelled));
+    }
+
+    #[test]
+    fn walk_does_not_descend_into_deleted_directory() {
+        let mut m = tree_image();
+        let mut deleted = dir_entry(b"SUB        ", 4);
+        deleted[0] = DELETED;
+        put(&mut m.0, 2, 0, &deleted);
+        let entries = walk(&m, ByteRange::new(0, m.capacity()).unwrap(), true,
+                           WalkLimits::default(), &CancellationToken::default()).unwrap();
+        // The deleted directory is reported, but its chain is not trusted.
+        assert!(entries.iter().any(|e| e.entry.deleted));
+        assert!(!entries.iter().any(|e| e.display_path().contains('/')));
+    }
+
+    #[test]
+    fn long_name_spanning_cluster_boundary_assembles() {
+        let mut m = image();
+        // Root spans clusters 2->3 (512-byte clusters = 16 entries each).
+        let name = b"LONGNA~1TXT";
+        let sum = short_name_checksum(&short_entry(name));
+        let full = "A Very Long File Name.txt";
+        let u = utf16(full);
+        // Fill cluster 2 with real entries; a zero slot would mean end-of-directory.
+        for slot in 0..15 { put(&mut m.0, 2, slot, &short_entry(b"FILLER  TXT")); }
+        for slot in 0..16 { put(&mut m.0, 3, slot, &[0u8; 32]); }
+        // Last fragment ends cluster 2; the rest continues in cluster 3.
+        put(&mut m.0, 2, 15, &lfn_entry(2, true, sum, &u[13..]));
+        put(&mut m.0, 3, 0, &lfn_entry(1, false, sum, &u[..13]));
+        put(&mut m.0, 3, 1, &short_entry(name));
+        let entries = read_root_entries(&m, ByteRange::new(0, m.capacity()).unwrap(), false).unwrap();
+        let named = entries.iter().find(|e| e.long_name.is_some()).expect("long name assembled");
+        assert_eq!(named.long_name.as_deref(), Some(full));
+        assert_eq!(named.short_name, "LONGNA~1.TXT");
     }
 }
