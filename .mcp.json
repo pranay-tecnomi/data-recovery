@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "omniroute": {
+      "command": "omniroute",
+      "args": ["--mcp"]
+    }
+  }
+}
