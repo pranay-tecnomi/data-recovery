@@ -6,6 +6,7 @@ members = [
   "crates/partition-discovery",
   "crates/filesystem-probe",
   "crates/fat32-recovery",
+  "crates/exfat-recovery",
   "crates/imaging-engine",
   "crates/platform-device",
 ]
