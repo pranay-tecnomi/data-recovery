@@ -1,6 +1,8 @@
 #![forbid(unsafe_code)]
 
+mod active;
 mod allocation;
+pub use active::active_file_extents;
 pub use allocation::{read_allocation_bitmap, AllocationBitmap};
 
 use std::collections::BTreeSet;
