@@ -12,8 +12,14 @@
 pub mod align;
 pub mod filename;
 
+#[cfg(target_os = "macos")]
+pub mod macos;
+
 pub use align::{align_read, AlignedRead};
 pub use filename::{sanitize_component, SanitizedName};
+
+#[cfg(target_os = "macos")]
+pub use macos::{raw_device_path, MacRawDevice};
 
 use recovery_core::SourceId;
 
