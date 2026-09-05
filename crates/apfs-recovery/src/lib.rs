@@ -11,7 +11,7 @@ mod omap_lookup;
 mod volume_omap;
 pub use btree::{btree_entries, btree_fixed_entries, btree_variable_entries, parse_btree_node, ApfsBtreeEntry, ApfsBtreeNode, ApfsBtreeVariableEntry, ApfsFixedBtreeEntry, ApfsVariableBtreeEntry};
 pub use catalog::{read_catalog_records, ApfsCatalogRecord};
-pub use fsrecord::{decode_dir_record_value, decode_file_extent_value, decode_inode_value, decode_jkey, extent_is_sparse, extent_length, ApfsDirRecordValue, ApfsFileExtentValue, ApfsInodeValue, ApfsJKey, APFS_TYPE_DIR_REC, APFS_TYPE_FILE_EXTENT, APFS_TYPE_INODE};
+pub use fsrecord::{decode_drec_key, decode_hashed_drec_key, decode_dir_record_value, decode_file_extent_value, decode_inode_value, decode_jkey, extent_is_sparse, extent_length, ApfsDrecKey, ApfsDirRecordValue, ApfsFileExtentValue, ApfsInodeValue, ApfsJKey, APFS_TYPE_DIR_REC, APFS_TYPE_FILE_EXTENT, APFS_TYPE_INODE};
 pub use omap::{parse_object_map, parse_object_map_key, parse_object_map_value, ApfsObjectMap, ApfsObjectMapKey, ApfsObjectMapValue};
 pub use omap_lookup::lookup_object_map;
 pub use volume_omap::{lookup_volume_object, resolve_volume_root};
