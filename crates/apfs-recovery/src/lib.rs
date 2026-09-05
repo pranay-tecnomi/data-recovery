@@ -5,8 +5,10 @@ use storage_io::BlockDevice;
 
 mod btree;
 mod omap;
-pub use btree::{btree_entries, btree_key, parse_btree_node, ApfsBtreeEntry, ApfsBtreeNode};
+mod omap_lookup;
+pub use btree::{btree_entries, btree_fixed_entries, parse_btree_node, ApfsBtreeEntry, ApfsBtreeNode, ApfsFixedBtreeEntry};
 pub use omap::{parse_object_map, parse_object_map_key, parse_object_map_value, ApfsObjectMap, ApfsObjectMapKey, ApfsObjectMapValue};
+pub use omap_lookup::lookup_object_map;
 
 const NXSB_MAGIC: u32 = 0x4253_584e;
 const APSB_MAGIC: u32 = 0x4253_5041;
