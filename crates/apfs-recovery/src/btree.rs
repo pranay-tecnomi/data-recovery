@@ -132,15 +132,6 @@ pub fn btree_fixed_entries<'a>(data: &'a [u8], key_size: usize, value_size: usiz
     Ok(result)
 }
 
-pub fn btree_key<'a>(data: &'a [u8], entry: ApfsBtreeEntry, _next: Option<ApfsBtreeEntry>) -> RecoveryResult<&'a [u8]> {
-    let node = parse_btree_node(data)?;
-    let table_start = NODE_HEADER_LEN.checked_add(usize::from(node.table_space_offset)).ok_or(RecoveryError::RangeOverflow)?;
-    let table_end = checked_end(table_start, usize::from(node.table_space_length), data.len())?;
-    let start = table_end.checked_add(usize::from(entry.key_offset)).ok_or(RecoveryError::RangeOverflow)?;
-    let end = checked_end(start, 1, data.len())?;
-    Ok(&data[start..end])
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -155,8 +146,8 @@ mod tests {
         data[60..62].copy_from_slice(&8u16.to_le_bytes()); data[62..64].copy_from_slice(&16u16.to_le_bytes());
         data[64..72].copy_from_slice(b"KEY00001");
         data[72..80].copy_from_slice(b"KEY00002");
-        data[432..448].copy_from_slice(b"VALUE000000000001");
-        data[448..464].copy_from_slice(b"VALUE000000000002");
+        data[432..448].copy_from_slice(b"VALUE00000000001");
+        data[448..464].copy_from_slice(b"VALUE00000000002");
         data
     }
     #[test]
@@ -169,9 +160,9 @@ mod tests {
         let data = node();
         let entries = btree_fixed_entries(&data, 8, 16).unwrap();
         assert_eq!(entries[0].key, b"KEY00001");
-        assert_eq!(entries[0].value, b"VALUE000000000001");
+        assert_eq!(entries[0].value, b"VALUE00000000001");
         assert_eq!(entries[1].key, b"KEY00002");
-        assert_eq!(entries[1].value, b"VALUE000000000002");
+        assert_eq!(entries[1].value, b"VALUE00000000002");
     }
     #[test]
     fn rejects_table_too_small() {
