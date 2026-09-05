@@ -105,6 +105,15 @@ pub fn btree_key<'a>(data: &'a [u8], entry: ApfsBtreeEntry, _next: Option<ApfsBt
     Ok(&data[start..end])
 }
 
+pub fn btree_value<'a>(data: &'a [u8], entry: ApfsBtreeEntry, next: Option<ApfsBtreeEntry>, table_end: usize) -> RecoveryResult<&'a [u8]> {
+    let start = usize::from(entry.value_offset);
+    let end = next.map(|e| usize::from(e.key_offset)).unwrap_or(table_end);
+    if start > end || end > data.len() || end > table_end {
+        return Err(RecoveryError::IoFailure("APFS B-tree value range is invalid".into()));
+    }
+    Ok(&data[start..end])
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -130,6 +139,8 @@ mod tests {
         let entries = btree_entries(&data).unwrap();
         assert_eq!(entries, vec![ApfsBtreeEntry { key_offset: 64, value_offset: 72 }, ApfsBtreeEntry { key_offset: 80, value_offset: 88 }]);
         assert_eq!(btree_key(&data, entries[0], Some(entries[1])).unwrap(), &data[64..72]);
+        assert_eq!(btree_value(&data, entries[0], Some(entries[1]), 192).unwrap(), &data[72..80]);
+        assert_eq!(btree_value(&data, entries[1], None, 192).unwrap(), &data[88..192]);
     }
     #[test]
     fn rejects_entry_outside_table() {
