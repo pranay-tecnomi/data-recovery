@@ -66,8 +66,8 @@ pub fn parse_btree_node(data: &[u8]) -> RecoveryResult<ApfsBtreeNode> {
     let entries_len = usize::try_from(node.key_count).ok()
         .and_then(|count| count.checked_mul(KV_OFFSET_LEN)).ok_or(RecoveryError::RangeOverflow)?;
     checked_end(NODE_HEADER_LEN, entries_len, data.len())?;
-    if node.key_count != 0 && (table_start < NODE_HEADER_LEN || table_start + table_len > data.len()) {
-        return Err(RecoveryError::IoFailure("APFS B-tree table space is invalid".into()));
+    if node.key_count != 0 && table_start < NODE_HEADER_LEN {
+        return Err(RecoveryError::IoFailure("APFS B-tree table space overlaps node header".into()));
     }
     Ok(node)
 }
@@ -88,14 +88,17 @@ pub fn btree_entries(data: &[u8]) -> RecoveryResult<Vec<ApfsBtreeEntry>> {
         if usize::from(value_offset) < table_start || usize::from(value_offset) > table_end {
             return Err(RecoveryError::IoFailure("APFS B-tree value offset is outside table space".into()));
         }
+        if value_offset < key_offset {
+            return Err(RecoveryError::IoFailure("APFS B-tree value precedes key".into()));
+        }
         entries.push(ApfsBtreeEntry { key_offset, value_offset });
     }
     Ok(entries)
 }
 
-pub fn btree_key<'a>(data: &'a [u8], entry: ApfsBtreeEntry, next: Option<ApfsBtreeEntry>) -> RecoveryResult<&'a [u8]> {
+pub fn btree_key<'a>(data: &'a [u8], entry: ApfsBtreeEntry, _next: Option<ApfsBtreeEntry>) -> RecoveryResult<&'a [u8]> {
     let start = usize::from(entry.key_offset);
-    let end = next.map(|e| usize::from(e.key_offset)).unwrap_or(usize::from(entry.value_offset));
+    let end = usize::from(entry.value_offset);
     if end < start || end > data.len() {
         return Err(RecoveryError::IoFailure("APFS B-tree key range is invalid".into()));
     }
@@ -126,10 +129,16 @@ mod tests {
         data[60..62].copy_from_slice(&80u16.to_le_bytes()); data[62..64].copy_from_slice(&88u16.to_le_bytes());
         let entries = btree_entries(&data).unwrap();
         assert_eq!(entries, vec![ApfsBtreeEntry { key_offset: 64, value_offset: 72 }, ApfsBtreeEntry { key_offset: 80, value_offset: 88 }]);
+        assert_eq!(btree_key(&data, entries[0], Some(entries[1])).unwrap(), &data[64..72]);
     }
     #[test]
     fn rejects_entry_outside_table() {
         let mut data = node(); data[56..58].copy_from_slice(&300u16.to_le_bytes()); data[58..60].copy_from_slice(&72u16.to_le_bytes());
+        assert!(btree_entries(&data).is_err());
+    }
+    #[test]
+    fn rejects_value_before_key() {
+        let mut data = node(); data[56..58].copy_from_slice(&100u16.to_le_bytes()); data[58..60].copy_from_slice(&90u16.to_le_bytes());
         assert!(btree_entries(&data).is_err());
     }
     #[test]
