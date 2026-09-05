@@ -15,6 +15,7 @@ pub struct ApfsContainer {
     pub features: u64,
     pub read_only_compatible_features: u64,
     pub incompatible_features: u64,
+    pub omap_oid: u64,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -24,9 +25,18 @@ pub struct ApfsVolume {
     pub read_only_compatible_features: u64,
     pub incompatible_features: u64,
     pub unmount_time: u64,
-    pub allocated_blocks: u64,
     pub reserve_blocks: u64,
     pub quota_blocks: u64,
+    pub allocated_blocks: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ApfsObjectHeader {
+    pub checksum: u64,
+    pub oid: u64,
+    pub xid: u64,
+    pub object_type: u32,
+    pub flags: u32,
 }
 
 fn u32_at(block: &[u8], offset: usize) -> u32 {
@@ -37,55 +47,100 @@ fn u64_at(block: &[u8], offset: usize) -> u64 {
     u64::from_le_bytes(block[offset..offset + 8].try_into().expect("fixed APFS field"))
 }
 
-pub fn parse_container_superblock(block: &[u8]) -> RecoveryResult<ApfsContainer> {
-    if block.len() < 80 {
+fn require_len(block: &[u8], required: usize) -> RecoveryResult<()> {
+    if block.len() < required {
         return Err(RecoveryError::LengthTooLarge { length: block.len() as u64 });
     }
+    Ok(())
+}
+
+pub fn parse_object_header(block: &[u8]) -> RecoveryResult<ApfsObjectHeader> {
+    require_len(block, 32)?;
+    Ok(ApfsObjectHeader {
+        checksum: u64_at(block, 0),
+        oid: u64_at(block, 8),
+        xid: u64_at(block, 16),
+        object_type: u32_at(block, 24),
+        flags: u32_at(block, 28),
+    })
+}
+
+pub fn parse_container_superblock(block: &[u8]) -> RecoveryResult<ApfsContainer> {
+    require_len(block, 184)?;
     if u32_at(block, 32) != NXSB_MAGIC {
         return Err(RecoveryError::IoFailure("not an APFS container superblock".into()));
     }
-    let block_size = u32_at(block, 40);
+    let block_size = u32_at(block, 36);
     if !(MIN_BLOCK_SIZE..=MAX_BLOCK_SIZE).contains(&block_size) || !block_size.is_power_of_two() {
         return Err(RecoveryError::IoFailure("invalid APFS block size".into()));
     }
-    let block_count = u64_at(block, 48);
+    let block_count = u64_at(block, 40);
     if block_count == 0 {
         return Err(RecoveryError::IoFailure("APFS container has zero blocks".into()));
     }
     Ok(ApfsContainer {
         block_size,
         block_count,
-        features: u64_at(block, 56),
-        read_only_compatible_features: u64_at(block, 64),
-        incompatible_features: u64_at(block, 72),
+        features: u64_at(block, 48),
+        read_only_compatible_features: u64_at(block, 56),
+        incompatible_features: u64_at(block, 64),
+        omap_oid: u64_at(block, 176),
     })
 }
 
 pub fn parse_volume_superblock(block: &[u8]) -> RecoveryResult<ApfsVolume> {
-    if block.len() < 104 {
-        return Err(RecoveryError::LengthTooLarge { length: block.len() as u64 });
-    }
+    require_len(block, 104)?;
     if u32_at(block, 32) != APSB_MAGIC {
         return Err(RecoveryError::IoFailure("not an APFS volume superblock".into()));
     }
-    let fs_index = u32_at(block, 40);
-    let features = u64_at(block, 48);
-    let read_only_compatible_features = u64_at(block, 56);
-    let incompatible_features = u64_at(block, 64);
-    let unmount_time = u64_at(block, 72);
-    let reserve_blocks = u64_at(block, 80);
-    let quota_blocks = u64_at(block, 88);
-    let allocated_blocks = u64_at(block, 96);
     Ok(ApfsVolume {
-        fs_index,
-        features,
-        read_only_compatible_features,
-        incompatible_features,
-        unmount_time,
-        allocated_blocks,
-        reserve_blocks,
-        quota_blocks,
+        fs_index: u32_at(block, 36),
+        features: u64_at(block, 40),
+        read_only_compatible_features: u64_at(block, 48),
+        incompatible_features: u64_at(block, 56),
+        unmount_time: u64_at(block, 64),
+        reserve_blocks: u64_at(block, 72),
+        quota_blocks: u64_at(block, 80),
+        allocated_blocks: u64_at(block, 88),
     })
+}
+
+pub fn read_object<D: BlockDevice>(
+    device: &D,
+    range: ByteRange,
+    container: &ApfsContainer,
+    oid: u64,
+) -> RecoveryResult<Vec<u8>> {
+    if oid >= container.block_count {
+        return Err(RecoveryError::OutOfRange {
+            offset: oid,
+            length: 1,
+            capacity: container.block_count,
+        });
+    }
+    let relative = oid
+        .checked_mul(u64::from(container.block_size))
+        .ok_or(RecoveryError::RangeOverflow)?;
+    let offset = range
+        .offset
+        .checked_add(relative)
+        .ok_or(RecoveryError::RangeOverflow)?;
+    let length = u64::from(container.block_size);
+    let end = offset.checked_add(length).ok_or(RecoveryError::RangeOverflow)?;
+    let range_end = range
+        .offset
+        .checked_add(range.length)
+        .ok_or(RecoveryError::RangeOverflow)?;
+    if end > range_end {
+        return Err(RecoveryError::OutOfRange { offset, length, capacity: range_end });
+    }
+    let object_range = ByteRange::new(offset, length)?;
+    object_range.validate_within(device.capacity())?;
+    let mut block = vec![0u8; container.block_size as usize];
+    if device.read(object_range, &mut block)? != block.len() {
+        return Err(RecoveryError::IoFailure("short APFS object read".into()));
+    }
+    Ok(block)
 }
 
 pub fn open<D: BlockDevice>(device: &D, range: ByteRange) -> RecoveryResult<ApfsContainer> {
@@ -114,34 +169,44 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parses_container_superblock_geometry() {
-        let mut block = vec![0u8; 512];
-        block[32..36].copy_from_slice(&NXSB_MAGIC.to_le_bytes());
-        block[40..44].copy_from_slice(&4096u32.to_le_bytes());
-        block[48..56].copy_from_slice(&1024u64.to_le_bytes());
-        block[56..64].copy_from_slice(&7u64.to_le_bytes());
-        block[64..72].copy_from_slice(&8u64.to_le_bytes());
-        block[72..80].copy_from_slice(&9u64.to_le_bytes());
-        let parsed = parse_container_superblock(&block).unwrap();
-        assert_eq!(parsed.block_size, 4096);
-        assert_eq!(parsed.block_count, 1024);
-        assert_eq!(parsed.features, 7);
-        assert_eq!(parsed.read_only_compatible_features, 8);
-        assert_eq!(parsed.incompatible_features, 9);
+    fn parses_object_header() {
+        let mut block = vec![0u8; 32];
+        block[0..8].copy_from_slice(&1u64.to_le_bytes());
+        block[8..16].copy_from_slice(&2u64.to_le_bytes());
+        block[16..24].copy_from_slice(&3u64.to_le_bytes());
+        block[24..28].copy_from_slice(&4u32.to_le_bytes());
+        block[28..32].copy_from_slice(&5u32.to_le_bytes());
+        assert_eq!(parse_object_header(&block).unwrap(), ApfsObjectHeader { checksum: 1, oid: 2, xid: 3, object_type: 4, flags: 5 });
     }
 
     #[test]
-    fn parses_volume_superblock_metadata() {
+    fn parses_container_geometry_and_omap_oid() {
         let mut block = vec![0u8; 512];
-        block[32..36].copy_from_slice(&APSB_MAGIC.to_le_bytes());
-        block[40..44].copy_from_slice(&3u32.to_le_bytes());
+        block[32..36].copy_from_slice(&NXSB_MAGIC.to_le_bytes());
+        block[36..40].copy_from_slice(&4096u32.to_le_bytes());
+        block[40..48].copy_from_slice(&1024u64.to_le_bytes());
         block[48..56].copy_from_slice(&7u64.to_le_bytes());
         block[56..64].copy_from_slice(&8u64.to_le_bytes());
         block[64..72].copy_from_slice(&9u64.to_le_bytes());
-        block[72..80].copy_from_slice(&10u64.to_le_bytes());
-        block[80..88].copy_from_slice(&11u64.to_le_bytes());
-        block[88..96].copy_from_slice(&12u64.to_le_bytes());
-        block[96..104].copy_from_slice(&13u64.to_le_bytes());
+        block[176..184].copy_from_slice(&99u64.to_le_bytes());
+        let parsed = parse_container_superblock(&block).unwrap();
+        assert_eq!(parsed.block_size, 4096);
+        assert_eq!(parsed.block_count, 1024);
+        assert_eq!(parsed.omap_oid, 99);
+    }
+
+    #[test]
+    fn parses_volume_superblock_metadata_at_spec_offsets() {
+        let mut block = vec![0u8; 512];
+        block[32..36].copy_from_slice(&APSB_MAGIC.to_le_bytes());
+        block[36..40].copy_from_slice(&3u32.to_le_bytes());
+        block[40..48].copy_from_slice(&7u64.to_le_bytes());
+        block[48..56].copy_from_slice(&8u64.to_le_bytes());
+        block[56..64].copy_from_slice(&9u64.to_le_bytes());
+        block[64..72].copy_from_slice(&10u64.to_le_bytes());
+        block[72..80].copy_from_slice(&11u64.to_le_bytes());
+        block[80..88].copy_from_slice(&12u64.to_le_bytes());
+        block[88..96].copy_from_slice(&13u64.to_le_bytes());
         let parsed = parse_volume_superblock(&block).unwrap();
         assert_eq!(parsed.fs_index, 3);
         assert_eq!(parsed.features, 7);
@@ -169,8 +234,8 @@ mod tests {
     fn rejects_invalid_block_size() {
         let mut block = vec![0u8; 512];
         block[32..36].copy_from_slice(&NXSB_MAGIC.to_le_bytes());
-        block[40..44].copy_from_slice(&3000u32.to_le_bytes());
-        block[48..56].copy_from_slice(&1u64.to_le_bytes());
+        block[36..40].copy_from_slice(&3000u32.to_le_bytes());
+        block[40..48].copy_from_slice(&1u64.to_le_bytes());
         assert!(parse_container_superblock(&block).is_err());
     }
 }
