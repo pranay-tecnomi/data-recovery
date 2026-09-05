@@ -1,7 +1,7 @@
 use recovery_core::{ByteRange, RecoveryError, RecoveryResult};
 use storage_io::BlockDevice;
 
-use crate::{active_file_extents, parse_directory_entries, ExFatDirectoryEntry, ExFatVolume};
+use crate::{active_file_extents, parse_directory_entries, parse_deleted_directory_entries, ExFatDirectoryEntry, ExFatVolume};
 
 const MAX_DIRECTORY_CLUSTERS: u32 = 1_000_000;
 const MAX_TREE_DEPTH: usize = 128;
@@ -26,17 +26,35 @@ fn read_clusters<D: BlockDevice>(volume: &ExFatVolume, device: &D, volume_range:
     read_ranges(device, &ranges, u64::try_from(total).map_err(|_| RecoveryError::LengthTooLarge { length: total as u64 })?, "directory cluster")
 }
 
+fn directory_chain<D: BlockDevice>(volume: &ExFatVolume, device: &D, volume_range: ByteRange, start_cluster: u32) -> RecoveryResult<Vec<u32>> {
+    let limit = volume.cluster_count.min(MAX_DIRECTORY_CLUSTERS);
+    if start_cluster < 2 || start_cluster >= volume.cluster_count.saturating_add(2) { return Err(RecoveryError::IoFailure("invalid exFAT directory starting cluster".into())); }
+    let chain = volume.cluster_chain(device, volume_range, start_cluster)?;
+    if chain.len() > usize::try_from(limit).unwrap_or(usize::MAX) { return Err(RecoveryError::IoFailure("exFAT directory exceeds traversal limit".into())); }
+    Ok(chain)
+}
+
 pub fn read_root_entries<D: BlockDevice>(volume: &ExFatVolume, device: &D, volume_range: ByteRange) -> RecoveryResult<Vec<ExFatDirectoryEntry>> {
     read_directory(volume, device, volume_range, volume.root_directory_cluster)
 }
 
 pub fn read_directory<D: BlockDevice>(volume: &ExFatVolume, device: &D, volume_range: ByteRange, start_cluster: u32) -> RecoveryResult<Vec<ExFatDirectoryEntry>> {
-    let limit = volume.cluster_count.min(MAX_DIRECTORY_CLUSTERS);
-    if start_cluster < 2 || start_cluster >= volume.cluster_count.saturating_add(2) { return Err(RecoveryError::IoFailure("invalid exFAT directory starting cluster".into())); }
-    let chain = volume.cluster_chain(device, volume_range, start_cluster)?;
-    if chain.len() > usize::try_from(limit).unwrap_or(usize::MAX) { return Err(RecoveryError::IoFailure("exFAT directory exceeds traversal limit".into())); }
+    let chain = directory_chain(volume, device, volume_range, start_cluster)?;
     let bytes = read_clusters(volume, device, volume_range, &chain)?;
     parse_directory_entries(&bytes)
+}
+
+/// Scans an exFAT directory stream for inactive file entry sets left by deletion.
+/// Unlike active parsing, this intentionally ignores active file sets and keeps
+/// scanning after end-of-directory markers so callers can inspect slack/tail data.
+pub fn read_deleted_directory<D: BlockDevice>(volume: &ExFatVolume, device: &D, volume_range: ByteRange, start_cluster: u32) -> RecoveryResult<Vec<ExFatDirectoryEntry>> {
+    let chain = directory_chain(volume, device, volume_range, start_cluster)?;
+    let bytes = read_clusters(volume, device, volume_range, &chain)?;
+    parse_deleted_directory_entries(&bytes)
+}
+
+pub fn read_deleted_root_entries<D: BlockDevice>(volume: &ExFatVolume, device: &D, volume_range: ByteRange) -> RecoveryResult<Vec<ExFatDirectoryEntry>> {
+    read_deleted_directory(volume, device, volume_range, volume.root_directory_cluster)
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -82,6 +100,7 @@ mod tests {
     fn rejects_invalid_directory_start() {
         let volume = ExFatVolume { partition_offset_sectors: 0, volume_length_sectors: 128, fat_offset_sectors: 1, fat_length_sectors: 1, cluster_heap_offset_sectors: 2, cluster_count: 10, root_directory_cluster: 2, bytes_per_sector: 512, bytes_per_cluster: 1024 };
         assert!(read_directory(&volume, &Dummy, ByteRange::new(0, 65_536).unwrap(), 1).is_err());
+        assert!(read_deleted_directory(&volume, &Dummy, ByteRange::new(0, 65_536).unwrap(), 1).is_err());
     }
     #[test]
     fn tree_entry_preserves_relative_path() {
