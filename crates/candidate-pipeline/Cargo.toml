@@ -1,0 +1,8 @@
+[package]
+name = "candidate-pipeline"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+recovery-core = { path = "../recovery-core" }
