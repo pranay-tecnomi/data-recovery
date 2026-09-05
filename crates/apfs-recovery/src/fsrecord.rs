@@ -6,11 +6,19 @@ pub const APFS_TYPE_DIR_REC: u8 = 9;
 pub const OBJ_ID_MASK: u64 = 0x0fff_ffff_ffff_ffff;
 pub const OBJ_TYPE_SHIFT: u32 = 60;
 pub const J_FILE_EXTENT_LEN_MASK: u64 = 0x00ff_ffff_ffff_ffff;
+pub const J_DREC_LEN_MASK: u32 = 0x0000_03ff;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ApfsJKey {
     pub object_id: u64,
     pub record_type: u8,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ApfsDrecKey {
+    pub parent_id: u64,
+    pub name: String,
+    pub name_len_and_hash: Option<u32>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -69,8 +77,41 @@ pub fn decode_jkey(data: &[u8]) -> RecoveryResult<ApfsJKey> {
     Ok(ApfsJKey { object_id: packed & OBJ_ID_MASK, record_type })
 }
 
+fn decode_name(data: &[u8]) -> RecoveryResult<String> {
+    let nul = data.iter().position(|&byte| byte == 0).ok_or_else(|| RecoveryError::IoFailure("APFS directory name is not NUL terminated".into()))?;
+    String::from_utf8(data[..nul].to_vec()).map_err(|_| RecoveryError::IoFailure("APFS directory name is not valid UTF-8".into()))
+}
+
+/// Decode an unhashed APFS directory-record key.
+pub fn decode_drec_key(data: &[u8]) -> RecoveryResult<ApfsDrecKey> {
+    need(data, 10)?;
+    let header = decode_jkey(data)?;
+    if header.record_type != APFS_TYPE_DIR_REC {
+        return Err(RecoveryError::IoFailure("APFS key is not a directory record".into()));
+    }
+    let name_len = usize::from(u16_at(data, 8));
+    if name_len == 0 || 10usize.checked_add(name_len).ok_or(RecoveryError::RangeOverflow)? > data.len() {
+        return Err(RecoveryError::OutOfRange { offset: 10, length: name_len as u64, capacity: data.len() as u64 });
+    }
+    Ok(ApfsDrecKey { parent_id: header.object_id, name: decode_name(&data[10..10 + name_len])?, name_len_and_hash: None })
+}
+
+/// Decode an APFS directory-record key carrying the packed name length/hash.
+pub fn decode_hashed_drec_key(data: &[u8]) -> RecoveryResult<ApfsDrecKey> {
+    need(data, 13)?;
+    let header = decode_jkey(data)?;
+    if header.record_type != APFS_TYPE_DIR_REC {
+        return Err(RecoveryError::IoFailure("APFS key is not a directory record".into()));
+    }
+    let packed = u32_at(data, 8);
+    let name_len = usize::try_from(packed & J_DREC_LEN_MASK).map_err(|_| RecoveryError::RangeOverflow)?;
+    if name_len == 0 || 12usize.checked_add(name_len).ok_or(RecoveryError::RangeOverflow)? > data.len() {
+        return Err(RecoveryError::OutOfRange { offset: 12, length: name_len as u64, capacity: data.len() as u64 });
+    }
+    Ok(ApfsDrecKey { parent_id: header.object_id, name: decode_name(&data[12..12 + name_len])?, name_len_and_hash: Some(packed) })
+}
+
 pub fn decode_inode_value(data: &[u8]) -> RecoveryResult<ApfsInodeValue> {
-    // j_inode_val_t fixed portion is 92 bytes; xfields follow it.
     need(data, 92)?;
     Ok(ApfsInodeValue {
         parent_id: u64_at(data, 0),
@@ -110,12 +151,49 @@ pub fn extent_is_sparse(value: &ApfsFileExtentValue) -> bool {
 mod tests {
     use super::*;
 
+    fn jkey(ty: u64, oid: u64) -> [u8; 8] { ((ty << OBJ_TYPE_SHIFT) | oid).to_le_bytes() }
+
     #[test]
     fn decodes_jkey_object_and_type() {
         let packed = (8u64 << OBJ_TYPE_SHIFT) | 0x1234;
         let key = decode_jkey(&packed.to_le_bytes()).unwrap();
         assert_eq!(key.object_id, 0x1234);
         assert_eq!(key.record_type, APFS_TYPE_FILE_EXTENT);
+    }
+
+    #[test]
+    fn decodes_plain_directory_key() {
+        let mut data = jkey(9, 42).to_vec();
+        data.extend_from_slice(&5u16.to_le_bytes());
+        data.extend_from_slice(b"test\0");
+        let key = decode_drec_key(&data).unwrap();
+        assert_eq!(key.parent_id, 42);
+        assert_eq!(key.name, "test");
+        assert_eq!(key.name_len_and_hash, None);
+    }
+
+    #[test]
+    fn decodes_hashed_directory_key() {
+        let packed = 5u32 | (0x12345u32 << 10);
+        let mut data = jkey(9, 42).to_vec();
+        data.extend_from_slice(&packed.to_le_bytes());
+        data.extend_from_slice(b"test\0");
+        let key = decode_hashed_drec_key(&data).unwrap();
+        assert_eq!(key.parent_id, 42);
+        assert_eq!(key.name, "test");
+        assert_eq!(key.name_len_and_hash, Some(packed));
+    }
+
+    #[test]
+    fn rejects_directory_key_with_wrong_type_or_truncated_name() {
+        let mut wrong = jkey(8, 42).to_vec();
+        wrong.extend_from_slice(&5u16.to_le_bytes());
+        wrong.extend_from_slice(b"test\0");
+        assert!(decode_drec_key(&wrong).is_err());
+        let mut short = jkey(9, 42).to_vec();
+        short.extend_from_slice(&5u16.to_le_bytes());
+        short.extend_from_slice(b"te");
+        assert!(decode_drec_key(&short).is_err());
     }
 
     #[test]
