@@ -1,6 +1,7 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 
-use recovery_core::{RecoveryError, RecoveryResult};
+use recovery_core::{ByteRange, RecoveryError, RecoveryResult};
+use storage_io::BlockDevice;
 
 use crate::{decode_dir_record_value, decode_drec_key, decode_file_extent_value, decode_hashed_drec_key, decode_inode_value, decode_jkey, extent_is_sparse, extent_length, ApfsCatalogRecord, ApfsDrecKey, ApfsFileExtentValue, ApfsInodeValue, APFS_TYPE_DIR_REC, APFS_TYPE_FILE_EXTENT, APFS_TYPE_INODE};
 
@@ -72,6 +73,35 @@ pub fn index_catalog_records(records: &[ApfsCatalogRecord]) -> RecoveryResult<Ap
     Ok(ApfsFilesystemIndex { directories, inodes, extents })
 }
 
+/// Reconstruct one file from physical APFS extents. Sparse extents and holes are zero-filled.
+/// Encrypted extents are rejected rather than returning silently corrupted plaintext.
+pub fn read_file_extents<D: BlockDevice>(device: &D, container_range: ByteRange, block_size: u32, extents: &[ApfsFileExtent], file_size: u64) -> RecoveryResult<Vec<u8>> {
+    if block_size == 0 || !block_size.is_power_of_two() { return Err(RecoveryError::IoFailure("invalid APFS block size".into())); }
+    let output_len = usize::try_from(file_size).map_err(|_| RecoveryError::LengthTooLarge { length: file_size })?;
+    let mut output = vec![0u8; output_len];
+    let mut previous_end = 0u64;
+    let container_end = container_range.offset.checked_add(container_range.length).ok_or(RecoveryError::RangeOverflow)?;
+    for extent in extents {
+        if extent.length == 0 { continue; }
+        let end = extent.logical_offset.checked_add(extent.length).ok_or(RecoveryError::RangeOverflow)?;
+        if extent.logical_offset < previous_end { return Err(RecoveryError::IoFailure("APFS file extents overlap".into())); }
+        previous_end = end;
+        if end > file_size { return Err(RecoveryError::OutOfRange { offset: extent.logical_offset, length: extent.length, capacity: file_size }); }
+        let start = usize::try_from(extent.logical_offset).map_err(|_| RecoveryError::LengthTooLarge { length: extent.logical_offset })?;
+        let len = usize::try_from(extent.length).map_err(|_| RecoveryError::LengthTooLarge { length: extent.length })?;
+        if extent.crypto_id != 0 { return Err(RecoveryError::IoFailure("encrypted APFS extent requires key material".into())); }
+        if extent.sparse { continue; }
+        let relative = extent.physical_block.checked_mul(u64::from(block_size)).ok_or(RecoveryError::RangeOverflow)?;
+        let physical = container_range.offset.checked_add(relative).ok_or(RecoveryError::RangeOverflow)?;
+        let physical_end = physical.checked_add(extent.length).ok_or(RecoveryError::RangeOverflow)?;
+        if physical_end > container_end { return Err(RecoveryError::OutOfRange { offset: physical, length: extent.length, capacity: container_end }); }
+        let read_range = ByteRange::new(physical, extent.length)?;
+        read_range.validate_within(device.capacity())?;
+        if device.read(read_range, &mut output[start..start + len])? != len { return Err(RecoveryError::IoFailure("short APFS extent read".into())); }
+    }
+    Ok(output)
+}
+
 impl ApfsFilesystemIndex {
     /// Resolve a directory entry to a full path, rejecting parent cycles.
     pub fn path_for_entry(&self, entry: &ApfsDirectoryEntry) -> RecoveryResult<String> {
@@ -94,6 +124,20 @@ impl ApfsFilesystemIndex {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::{sync::{Arc, Mutex}};
+
+    struct MemoryDevice { data: Arc<Mutex<Vec<u8>>> }
+    impl BlockDevice for MemoryDevice {
+        fn capacity(&self) -> u64 { self.data.lock().unwrap().len() as u64 }
+        fn read(&self, range: ByteRange, output: &mut [u8]) -> RecoveryResult<usize> {
+            range.validate_within(self.capacity())?;
+            let len = usize::try_from(range.length).map_err(|_| RecoveryError::LengthTooLarge { length: range.length })?;
+            if output.len() < len { return Err(RecoveryError::OutputBufferTooSmall { required: len, provided: output.len() }); }
+            output[..len].copy_from_slice(&self.data.lock().unwrap()[range.offset as usize..range.offset as usize + len]);
+            Ok(len)
+        }
+    }
+
     fn jkey(ty: u64, oid: u64) -> Vec<u8> { ((ty << 60) | oid).to_le_bytes().to_vec() }
 
     #[test]
@@ -122,5 +166,26 @@ mod tests {
         let b = ApfsDirectoryEntry { parent_id: 2, file_id: 3, name: "b".into(), flags: 0 };
         let index = ApfsFilesystemIndex { directories: vec![a.clone(), b], inodes: BTreeMap::new(), extents: BTreeMap::new() };
         assert!(index.path_for_entry(&a).is_err());
+    }
+
+    #[test]
+    fn reconstructs_sparse_and_physical_extents() {
+        let image = MemoryDevice { data: Arc::new(Mutex::new(vec![0, 0, 0, 0, 0x41, 0x42, 0x43, 0x44, 0, 0, 0, 0, 0x51, 0x52, 0x53, 0x54])) };
+        let extents = vec![
+            ApfsFileExtent { logical_offset: 0, length: 4, physical_block: 1, crypto_id: 0, sparse: false },
+            ApfsFileExtent { logical_offset: 4, length: 4, physical_block: 0, crypto_id: 0, sparse: true },
+            ApfsFileExtent { logical_offset: 8, length: 4, physical_block: 3, crypto_id: 0, sparse: false },
+        ];
+        let output = read_file_extents(&image, ByteRange::new(0, 16).unwrap(), 4, &extents, 12).unwrap();
+        assert_eq!(output, b"ABCD\0\0\0\0QRST");
+    }
+
+    #[test]
+    fn rejects_overlapping_or_encrypted_extents() {
+        let image = MemoryDevice { data: Arc::new(Mutex::new(vec![0u8; 16])) };
+        let overlap = vec![ApfsFileExtent { logical_offset: 0, length: 8, physical_block: 0, crypto_id: 0, sparse: true }, ApfsFileExtent { logical_offset: 4, length: 4, physical_block: 0, crypto_id: 0, sparse: true }];
+        assert!(read_file_extents(&image, ByteRange::new(0, 16).unwrap(), 4, &overlap, 8).is_err());
+        let encrypted = vec![ApfsFileExtent { logical_offset: 0, length: 4, physical_block: 0, crypto_id: 1, sparse: false }];
+        assert!(read_file_extents(&image, ByteRange::new(0, 16).unwrap(), 4, &encrypted, 4).is_err());
     }
 }
