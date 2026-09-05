@@ -12,15 +12,29 @@ fn u64_at(data: &[u8]) -> u64 {
     u64::from_le_bytes(data.try_into().expect("fixed APFS integer"))
 }
 
-fn compare_key(bytes: &[u8], target: ApfsObjectMapKey) -> RecoveryResult<std::cmp::Ordering> {
+fn decode_key(bytes: &[u8]) -> RecoveryResult<ApfsObjectMapKey> {
     if bytes.len() != OMAP_KEY_SIZE {
         return Err(RecoveryError::IoFailure("APFS object-map key has unexpected size".into()));
     }
-    let key = ApfsObjectMapKey {
+    Ok(ApfsObjectMapKey {
         oid: u64::from_le_bytes(bytes[0..8].try_into().expect("fixed APFS key")),
         xid: u64::from_le_bytes(bytes[8..16].try_into().expect("fixed APFS key")),
-    };
-    Ok((key.oid, key.xid).cmp(&(target.oid, target.xid)))
+    })
+}
+
+fn compare_key(bytes: &[u8], target: ApfsObjectMapKey) -> RecoveryResult<std::cmp::Ordering> {
+    Ok((decode_key(bytes)?.oid, decode_key(bytes)?.xid).cmp(&(target.oid, target.xid)))
+}
+
+fn decode_value(bytes: &[u8]) -> RecoveryResult<ApfsObjectMapValue> {
+    if bytes.len() != OMAP_LEAF_VALUE_SIZE {
+        return Err(RecoveryError::IoFailure("APFS object-map value has unexpected size".into()));
+    }
+    Ok(ApfsObjectMapValue {
+        flags: u32::from_le_bytes(bytes[0..4].try_into().expect("fixed APFS value")),
+        size: u32::from_le_bytes(bytes[4..8].try_into().expect("fixed APFS value")),
+        physical_address: u64_at(&bytes[8..16]),
+    })
 }
 
 pub fn lookup_object_map<D: BlockDevice>(
@@ -54,29 +68,25 @@ pub fn lookup_object_map<D: BlockDevice>(
             return Err(RecoveryError::IoFailure("APFS object-map node has no entries".into()));
         }
         if node.is_leaf() {
-            let mut best: Option<ApfsObjectMapValue> = None;
+            let mut best: Option<(u64, ApfsObjectMapValue)> = None;
             for entry in entries {
-                match compare_key(entry.key, target)? {
-                    std::cmp::Ordering::Equal => {
-                        return Ok(ApfsObjectMapValue {
-                            flags: u32::from_le_bytes(entry.value[0..4].try_into().expect("fixed APFS value")),
-                            size: u32::from_le_bytes(entry.value[4..8].try_into().expect("fixed APFS value")),
-                            physical_address: u64_at(&entry.value[8..16]),
-                        });
-                    }
-                    std::cmp::Ordering::Less => {}
-                    std::cmp::Ordering::Greater => break,
+                let key = decode_key(entry.key)?;
+                if key.oid > target.oid {
+                    break;
                 }
-                if compare_key(entry.key, target)? == std::cmp::Ordering::Less {
-                    let value = ApfsObjectMapValue {
-                        flags: u32::from_le_bytes(entry.value[0..4].try_into().expect("fixed APFS value")),
-                        size: u32::from_le_bytes(entry.value[4..8].try_into().expect("fixed APFS value")),
-                        physical_address: u64_at(&entry.value[8..16]),
-                    };
-                    best = Some(value);
+                if key.oid < target.oid {
+                    continue;
+                }
+                if key.xid == target.xid {
+                    return decode_value(entry.value);
+                }
+                if key.xid < target.xid {
+                    best = Some((key.xid, decode_value(entry.value)?));
                 }
             }
-            return best.ok_or_else(|| RecoveryError::IoFailure("APFS object-map key is not present".into()));
+            return best
+                .map(|(_, value)| value)
+                .ok_or_else(|| RecoveryError::IoFailure("APFS object-map key is not present at or before target XID".into()));
         }
         let mut child = None;
         for entry in entries {
@@ -97,6 +107,7 @@ pub fn lookup_object_map<D: BlockDevice>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
     #[test]
     fn compares_object_map_keys_in_oid_then_xid_order() {
         assert_eq!(compare_key(&[1u8; 16], ApfsObjectMapKey { oid: 2, xid: 1 }).unwrap(), std::cmp::Ordering::Less);
@@ -104,5 +115,19 @@ mod tests {
         key[0..8].copy_from_slice(&7u64.to_le_bytes());
         key[8..16].copy_from_slice(&9u64.to_le_bytes());
         assert_eq!(compare_key(&key, ApfsObjectMapKey { oid: 7, xid: 9 }).unwrap(), std::cmp::Ordering::Equal);
+    }
+
+    #[test]
+    fn decodes_leaf_value_with_flags_size_and_physical_address() {
+        let mut value = [0u8; 16];
+        value[0..4].copy_from_slice(&3u32.to_le_bytes());
+        value[4..8].copy_from_slice(&4096u32.to_le_bytes());
+        value[8..16].copy_from_slice(&99u64.to_le_bytes());
+        assert_eq!(decode_value(&value).unwrap(), ApfsObjectMapValue { flags: 3, size: 4096, physical_address: 99 });
+    }
+
+    #[test]
+    fn rejects_wrong_leaf_value_size() {
+        assert!(decode_value(&[0u8; 15]).is_err());
     }
 }
