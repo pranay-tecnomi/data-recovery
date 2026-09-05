@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Data Recovery</title>
+<link rel="stylesheet" href="style.css" />
+</head>
+<body>
+<header class="bar">
+  <h1>Data Recovery</h1>
+  <p class="safety" role="note">Sources are opened read-only and are never written to.</p>
+</header>
+
+<main>
+  <section class="panel" aria-labelledby="source-heading">
+    <h2 id="source-heading">Source</h2>
+    <div class="row">
+      <label for="source">Disk image</label>
+      <input id="source" type="text" spellcheck="false" placeholder="/path/to/disk.img" />
+    </div>
+    <div class="row">
+      <label for="carving">Carving</label>
+      <div class="checkbox">
+        <input id="carving" type="checkbox" checked />
+        <span>Also scan raw bytes for files with no directory record</span>
+      </div>
+    </div>
+    <button id="scan" class="primary">Scan</button>
+    <p id="status" class="status" role="status" aria-live="polite"></p>
+  </section>
+
+  <section class="panel" id="results-panel" hidden aria-labelledby="results-heading">
+    <div class="results-head">
+      <h2 id="results-heading">Results</h2>
+      <div class="filters">
+        <label for="filter">Show</label>
+        <select id="filter">
+          <option value="all">All confidence levels</option>
+          <option value="high">High only</option>
+          <option value="medium">Medium and above</option>
+          <option value="low">Low and above</option>
+        </select>
+        <button id="select-all" class="ghost">Select all shown</button>
+      </div>
+    </div>
+    <div id="summary" class="summary"></div>
+    <div class="table-wrap">
+      <table id="results">
+        <thead>
+          <tr>
+            <th scope="col" class="tick"><span class="sr-only">Selected</span></th>
+            <th scope="col">Name</th>
+            <th scope="col">Origin</th>
+            <th scope="col">Size</th>
+            <th scope="col">Confidence</th>
+            <th scope="col">Content check</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="panel" id="recover-panel" hidden aria-labelledby="recover-heading">
+    <h2 id="recover-heading">Recover to</h2>
+    <div class="row">
+      <label for="destination">Destination</label>
+      <input id="destination" type="text" spellcheck="false" placeholder="/path/to/output" />
+    </div>
+    <p class="hint">The destination must be a separate location. Writing onto the source is blocked.</p>
+    <button id="recover" class="primary">Recover selected</button>
+    <p id="recover-status" class="status" role="status" aria-live="polite"></p>
+  </section>
+</main>
+
+<script type="module" src="app.js"></script>
+</body>
+</html>

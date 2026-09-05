@@ -1,0 +1,29 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Data Recovery",
+  "version": "0.1.0",
+  "identifier": "com.tecnomi.data-recovery",
+  "build": {
+    "frontendDist": "../ui"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "Data Recovery",
+        "width": 1100,
+        "height": 760,
+        "minWidth": 860,
+        "minHeight": 560,
+        "theme": "Dark"
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; style-src 'self' 'unsafe-inline'"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["app", "dmg", "msi", "nsis"],
+    "icon": ["icons/icon.png"]
+  }
+}

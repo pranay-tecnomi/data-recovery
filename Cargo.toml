@@ -13,6 +13,7 @@ members = [
   "crates/recovery-output",
   "crates/file-carving",
   "crates/integration-tests",
+  "apps/desktop/src-tauri",
 ]
 
 [workspace.package]

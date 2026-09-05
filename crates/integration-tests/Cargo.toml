@@ -20,3 +20,7 @@ candidate-pipeline = { path = "../candidate-pipeline" }
 recovery-output = { path = "../recovery-output" }
 file-carving = { path = "../file-carving" }
 platform-device = { path = "../platform-device" }
+
+[[bin]]
+name = "make-image"
+path = "src/bin/make_image.rs"
