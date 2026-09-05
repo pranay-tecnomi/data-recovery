@@ -6,9 +6,11 @@ use storage_io::BlockDevice;
 mod btree;
 mod omap;
 mod omap_lookup;
+mod volume_omap;
 pub use btree::{btree_entries, btree_fixed_entries, parse_btree_node, ApfsBtreeEntry, ApfsBtreeNode, ApfsFixedBtreeEntry};
 pub use omap::{parse_object_map, parse_object_map_key, parse_object_map_value, ApfsObjectMap, ApfsObjectMapKey, ApfsObjectMapValue};
 pub use omap_lookup::lookup_object_map;
+pub use volume_omap::{lookup_volume_object, resolve_volume_root};
 
 const NXSB_MAGIC: u32 = 0x4253_584e;
 const APSB_MAGIC: u32 = 0x4253_5041;
@@ -88,19 +90,7 @@ pub fn parse_volume_superblock(block: &[u8]) -> RecoveryResult<ApfsVolume> {
     require_len(block, 160)?;
     if u32_at(block, 32) != APSB_MAGIC { return Err(RecoveryError::IoFailure("not an APFS volume superblock".into())); }
     Ok(ApfsVolume {
-        fs_index: u32_at(block, 36),
-        features: u64_at(block, 40),
-        read_only_compatible_features: u64_at(block, 48),
-        incompatible_features: u64_at(block, 56),
-        unmount_time: u64_at(block, 64),
-        reserve_blocks: u64_at(block, 72),
-        quota_blocks: u64_at(block, 80),
-        allocated_blocks: u64_at(block, 88),
-        fs_reserve_blocks: u64_at(block, 96),
-        omap_oid: u64_at(block, 128),
-        root_tree_oid: u64_at(block, 136),
-        extentref_tree_oid: u64_at(block, 144),
-        snap_meta_tree_oid: u64_at(block, 152),
+        fs_index: u32_at(block, 36), features: u64_at(block, 40), read_only_compatible_features: u64_at(block, 48), incompatible_features: u64_at(block, 56), unmount_time: u64_at(block, 64), reserve_blocks: u64_at(block, 72), quota_blocks: u64_at(block, 80), allocated_blocks: u64_at(block, 88), fs_reserve_blocks: u64_at(block, 96), omap_oid: u64_at(block, 128), root_tree_oid: u64_at(block, 136), extentref_tree_oid: u64_at(block, 144), snap_meta_tree_oid: u64_at(block, 152),
     })
 }
 
