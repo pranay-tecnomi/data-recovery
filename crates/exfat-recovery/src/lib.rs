@@ -7,7 +7,7 @@ mod directory;
 pub use active::active_file_extents;
 pub use allocation::{read_allocation_bitmap, AllocationBitmap};
 pub use deleted::{parse_deleted_directory_entries, parse_deleted_directory_entry_set};
-pub use directory::{read_directory, read_root_entries, read_tree, ExFatTreeEntry};
+pub use directory::{read_deleted_directory, read_deleted_root_entries, read_directory, read_root_entries, read_tree, ExFatTreeEntry};
 
 use std::collections::BTreeSet;
 
