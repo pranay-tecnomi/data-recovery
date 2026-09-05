@@ -3,3 +3,6 @@
 *.img
 *.dmg
 *.qcow2
+
+# Tauri build-generated schemas
+apps/desktop/src-tauri/gen/
