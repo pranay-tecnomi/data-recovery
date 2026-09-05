@@ -7,73 +7,140 @@
 <link rel="stylesheet" href="style.css" />
 </head>
 <body>
-<header class="bar">
-  <h1>Data Recovery</h1>
-  <p class="safety" role="note">Sources are opened read-only and are never written to.</p>
-</header>
+<div class="app">
 
-<main>
-  <section class="panel" aria-labelledby="source-heading">
-    <h2 id="source-heading">Source</h2>
-    <div class="row">
-      <label for="source">Disk image</label>
-      <input id="source" type="text" spellcheck="false" placeholder="/path/to/disk.img" />
+  <!-- Left rail: sources, like Disk Drill's device list -->
+  <aside class="rail">
+    <div class="brand">
+      <span class="mark" aria-hidden="true"></span>
+      <span>Data Recovery</span>
     </div>
-    <div class="row">
-      <label for="carving">Carving</label>
-      <div class="checkbox">
-        <input id="carving" type="checkbox" checked />
-        <span>Also scan raw bytes for files with no directory record</span>
+
+    <nav class="rail-nav" aria-label="Sources">
+      <p class="rail-label">Source</p>
+      <ul id="source-list" class="source-list"></ul>
+      <button id="add-source" class="rail-add" type="button">Open disk image…</button>
+    </nav>
+
+    <div class="rail-foot">
+      <p class="read-only">
+        <span class="lock" aria-hidden="true"></span>
+        Sources are opened read-only
+      </p>
+    </div>
+  </aside>
+
+  <main class="stage">
+
+    <!-- Step 1: chosen source, one primary action -->
+    <section id="view-source" class="view">
+      <div class="hero">
+        <h1 id="hero-name">No source selected</h1>
+        <p id="hero-meta" class="hero-meta">Open a disk image to begin.</p>
+
+        <div class="hero-path">
+          <input id="source" type="text" spellcheck="false"
+                 placeholder="/path/to/disk.img" aria-label="Disk image path" />
+        </div>
+
+        <div class="scan-modes" role="radiogroup" aria-label="Scan mode">
+          <label class="mode">
+            <input type="radio" name="mode" value="quick" />
+            <span class="mode-body">
+              <strong>Quick scan</strong>
+              <em>Reads directory records. Keeps original names and folders.</em>
+            </span>
+          </label>
+          <label class="mode">
+            <input type="radio" name="mode" value="deep" checked />
+            <span class="mode-body">
+              <strong>Deep scan</strong>
+              <em>Adds raw signature search. Finds files with no directory record.</em>
+            </span>
+          </label>
+        </div>
+
+        <button id="scan" class="cta">Search for lost data</button>
+        <p id="status" class="status" role="status" aria-live="polite"></p>
       </div>
-    </div>
-    <button id="scan" class="primary">Scan</button>
-    <p id="status" class="status" role="status" aria-live="polite"></p>
-  </section>
+    </section>
 
-  <section class="panel" id="results-panel" hidden aria-labelledby="results-heading">
-    <div class="results-head">
-      <h2 id="results-heading">Results</h2>
-      <div class="filters">
-        <label for="filter">Show</label>
-        <select id="filter">
-          <option value="all">All confidence levels</option>
-          <option value="high">High only</option>
-          <option value="medium">Medium and above</option>
-          <option value="low">Low and above</option>
-        </select>
-        <button id="select-all" class="ghost">Select all shown</button>
+    <!-- Step 2: results -->
+    <section id="view-results" class="view" hidden>
+      <header class="results-bar">
+        <div>
+          <h1 id="results-title">Results</h1>
+          <p id="results-sub" class="hero-meta"></p>
+        </div>
+        <div class="results-actions">
+          <button id="back" class="ghost" type="button">New scan</button>
+          <button id="recover" class="cta small" disabled>Recover</button>
+        </div>
+      </header>
+
+      <!-- Recovery-chance summary, the thing Disk Drill leads with -->
+      <div id="chances" class="chances" role="group" aria-label="Filter by recovery chance"></div>
+
+      <div class="results-body">
+        <div class="filters-col">
+          <p class="rail-label">File type</p>
+          <ul id="type-filters" class="type-filters"></ul>
+        </div>
+
+        <div class="list-col">
+          <div class="list-tools">
+            <input id="search" type="search" placeholder="Filter by name…" aria-label="Filter by name" />
+            <label class="checkbox compact">
+              <input id="select-all" type="checkbox" />
+              <span>Select all shown</span>
+            </label>
+            <span id="count" class="count"></span>
+          </div>
+          <div class="table-wrap">
+            <table id="results">
+              <thead>
+                <tr>
+                  <th scope="col" class="tick"><span class="sr-only">Select</span></th>
+                  <th scope="col">Name</th>
+                  <th scope="col">Size</th>
+                  <th scope="col">Chance</th>
+                  <th scope="col">Found by</th>
+                </tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </div>
+
+        <aside class="detail-col" id="detail" aria-live="polite">
+          <p class="detail-empty">Select a file to see why it is rated this way.</p>
+        </aside>
       </div>
-    </div>
-    <div id="summary" class="summary"></div>
-    <div class="table-wrap">
-      <table id="results">
-        <thead>
-          <tr>
-            <th scope="col" class="tick"><span class="sr-only">Selected</span></th>
-            <th scope="col">Name</th>
-            <th scope="col">Origin</th>
-            <th scope="col">Size</th>
-            <th scope="col">Confidence</th>
-            <th scope="col">Content check</th>
-          </tr>
-        </thead>
-        <tbody></tbody>
-      </table>
-    </div>
-  </section>
+    </section>
 
-  <section class="panel" id="recover-panel" hidden aria-labelledby="recover-heading">
-    <h2 id="recover-heading">Recover to</h2>
-    <div class="row">
-      <label for="destination">Destination</label>
-      <input id="destination" type="text" spellcheck="false" placeholder="/path/to/output" />
-    </div>
-    <p class="hint">The destination must be a separate location. Writing onto the source is blocked.</p>
-    <button id="recover" class="primary">Recover selected</button>
-    <p id="recover-status" class="status" role="status" aria-live="polite"></p>
-  </section>
-</main>
+    <!-- Step 3: destination -->
+    <section id="view-recover" class="view" hidden>
+      <div class="hero narrow">
+        <h1>Recover files</h1>
+        <p id="recover-count" class="hero-meta"></p>
+        <div class="hero-path">
+          <input id="destination" type="text" spellcheck="false"
+                 placeholder="/path/to/output" aria-label="Destination folder" />
+        </div>
+        <p class="warn">
+          Choose a different drive from the source. Recovering onto the source
+          would overwrite the data you are trying to recover, so it is blocked.
+        </p>
+        <div class="recover-actions">
+          <button id="cancel-recover" class="ghost" type="button">Back</button>
+          <button id="do-recover" class="cta">Recover now</button>
+        </div>
+        <p id="recover-status" class="status" role="status" aria-live="polite"></p>
+      </div>
+    </section>
 
+  </main>
+</div>
 <script type="module" src="app.js"></script>
 </body>
 </html>
