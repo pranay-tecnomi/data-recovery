@@ -1,7 +1,7 @@
 use recovery_core::{ByteRange, RecoveryError, RecoveryResult};
 use storage_io::BlockDevice;
 
-use crate::{btree_variable_entries, read_object, ApfsContainer, ApfsVariableBtreeEntry};
+use crate::{btree_variable_entries, lookup_volume_object, read_object, ApfsContainer, ApfsObjectMapKey, ApfsVariableBtreeEntry, ApfsVolume};
 
 const MAX_DEPTH: usize = 64;
 
@@ -20,11 +20,8 @@ fn child_oid(entry: &ApfsVariableBtreeEntry<'_>) -> RecoveryResult<u64> {
     Ok(u64::from_le_bytes(entry.value.try_into().expect("validated APFS child OID")))
 }
 
-/// Traverse every reachable catalog B-tree child and collect leaf records.
-///
-/// This intentionally does not assume sibling-link fields. It recursively
-/// visits branch children and therefore remains correct for trees whose leaf
-/// sibling metadata is unavailable or malformed.
+/// Traverse every reachable catalog B-tree child when node references are
+/// already physical block numbers.
 pub fn read_catalog_records<D: BlockDevice>(
     device: &D,
     range: ByteRange,
@@ -74,6 +71,82 @@ pub fn read_catalog_records<D: BlockDevice>(
     let mut visited = Vec::new();
     let mut records = Vec::new();
     walk(device, range, container, root_oid, 0, &mut visited, &mut records)?;
+    Ok(records)
+}
+
+/// Traverse a volume catalog while resolving every virtual B-tree node
+/// reference through the volume object map. APFS catalog branch values are
+/// object IDs, not guaranteed physical block addresses.
+pub fn read_volume_catalog_records<D: BlockDevice>(
+    device: &D,
+    range: ByteRange,
+    container: &ApfsContainer,
+    volume: &ApfsVolume,
+    xid: u64,
+) -> RecoveryResult<Vec<ApfsCatalogRecord>> {
+    fn resolve_node<D: BlockDevice>(
+        device: &D,
+        range: ByteRange,
+        container: &ApfsContainer,
+        volume: &ApfsVolume,
+        oid: u64,
+        xid: u64,
+    ) -> RecoveryResult<u64> {
+        let mapping = lookup_volume_object(device, range, container, volume, ApfsObjectMapKey { oid, xid })?;
+        if mapping.is_deleted() {
+            return Err(RecoveryError::IoFailure("APFS catalog node mapping is deleted".into()));
+        }
+        if mapping.physical_address >= container.block_count {
+            return Err(RecoveryError::OutOfRange { offset: mapping.physical_address, length: 1, capacity: container.block_count });
+        }
+        Ok(mapping.physical_address)
+    }
+
+    fn walk<D: BlockDevice>(
+        device: &D,
+        range: ByteRange,
+        container: &ApfsContainer,
+        volume: &ApfsVolume,
+        node_oid: u64,
+        xid: u64,
+        depth: usize,
+        visited: &mut Vec<u64>,
+        out: &mut Vec<ApfsCatalogRecord>,
+    ) -> RecoveryResult<()> {
+        if depth >= MAX_DEPTH {
+            return Err(RecoveryError::IoFailure("APFS catalog tree exceeds depth limit".into()));
+        }
+        if visited.contains(&node_oid) {
+            return Err(RecoveryError::IoFailure("APFS catalog tree contains a cycle".into()));
+        }
+        visited.push(node_oid);
+        let physical = resolve_node(device, range, container, volume, node_oid, xid)?;
+        let block = read_object(device, range, container, physical)?;
+        let node = crate::parse_btree_node(&block)?;
+        let entries = btree_variable_entries(&block)?;
+        if entries.is_empty() {
+            return Err(RecoveryError::IoFailure("APFS catalog node has no entries".into()));
+        }
+        if node.is_leaf() {
+            out.extend(entries.into_iter().map(|entry| ApfsCatalogRecord {
+                key: entry.key.to_vec(),
+                value: entry.value.to_vec(),
+            }));
+        } else {
+            for entry in entries {
+                walk(device, range, container, volume, child_oid(&entry)?, xid, depth + 1, visited, out)?;
+            }
+        }
+        visited.pop();
+        Ok(())
+    }
+
+    if volume.root_tree_oid == 0 {
+        return Err(RecoveryError::IoFailure("APFS volume has no root-tree OID".into()));
+    }
+    let mut visited = Vec::new();
+    let mut records = Vec::new();
+    walk(device, range, container, volume, volume.root_tree_oid, xid, 0, &mut visited, &mut records)?;
     Ok(records)
 }
 
