@@ -3,6 +3,9 @@
 use recovery_core::{ByteRange, RecoveryError, RecoveryResult};
 use storage_io::BlockDevice;
 
+mod omap;
+pub use omap::{parse_object_map, parse_object_map_key, parse_object_map_value, ApfsObjectMap, ApfsObjectMapKey, ApfsObjectMapValue};
+
 const NXSB_MAGIC: u32 = 0x4253_584e;
 const APSB_MAGIC: u32 = 0x4253_5041;
 const MIN_BLOCK_SIZE: u32 = 512;
