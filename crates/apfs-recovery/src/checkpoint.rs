@@ -1,7 +1,7 @@
 use recovery_core::{ByteRange, RecoveryError, RecoveryResult};
 use storage_io::BlockDevice;
 
-use crate::{parse_container_superblock, parse_object_header, read_object, ApfsContainer};
+use crate::{parse_container_superblock, parse_object_header, read_object, verify_fletcher64, ApfsContainer};
 
 const NX_SUPERBLOCK_TYPE: u32 = 0x0000_0001;
 const XP_DESC_FRAGMENTED: u32 = 0x8000_0000;
@@ -31,6 +31,11 @@ pub(crate) fn read_latest_container_superblock_with_block<D: BlockDevice>(
         return Err(RecoveryError::IoFailure("short APFS container superblock read".into()));
     }
     let base = parse_container_superblock(&initial)?;
+    let block_size = base.block_size as usize;
+    if block_size > initial.len() {
+        return Err(RecoveryError::IoFailure("APFS container block exceeds initial read".into()));
+    }
+    verify_fletcher64(&initial[..block_size])?;
     if u64::from(base.block_size) > range.length {
         return Err(RecoveryError::IoFailure("APFS container block exceeds supplied range".into()));
     }
@@ -43,7 +48,7 @@ pub(crate) fn read_latest_container_superblock_with_block<D: BlockDevice>(
     }
     let desc_blocks = desc_blocks_raw;
     if desc_blocks == 0 {
-        return Ok((base, initial[..base.block_size as usize].to_vec()));
+        return Ok((base, initial[..block_size].to_vec()));
     }
     if desc_blocks > MAX_CHECKPOINT_BLOCKS {
         return Err(RecoveryError::LengthTooLarge { length: desc_blocks as u64 });
@@ -59,6 +64,9 @@ pub(crate) fn read_latest_container_superblock_with_block<D: BlockDevice>(
     for index in 0..desc_blocks {
         let oid = desc_base.checked_add(index as u64).ok_or(RecoveryError::RangeOverflow)?;
         let block = read_object(device, range, &base, oid)?;
+        if verify_fletcher64(&block).is_err() {
+            continue;
+        }
         let header = match parse_object_header(&block) {
             Ok(header) if header.object_type & 0x0000_ffff == NX_SUPERBLOCK_TYPE => header,
             _ => continue,
@@ -79,7 +87,7 @@ pub(crate) fn read_latest_container_superblock_with_block<D: BlockDevice>(
     }
 
     Ok(best.map(|(_, container, block)| (container, block)).unwrap_or_else(|| {
-        let block = initial[..base.block_size as usize].to_vec();
+        let block = initial[..block_size].to_vec();
         (base, block)
     }))
 }
