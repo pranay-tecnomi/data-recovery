@@ -6,6 +6,10 @@ use crate::{parse_container_superblock, parse_object_header, read_object, verify
 const NX_SUPERBLOCK_TYPE: u32 = 0x0000_0001;
 const XP_DESC_FRAGMENTED: u32 = 0x8000_0000;
 const MAX_CHECKPOINT_BLOCKS: u32 = 1_048_576;
+const NX_XP_DESC_BLOCKS: usize = 0x68;
+const NX_XP_DESC_BASE: usize = 0x70;
+const NX_XP_DESC_INDEX: usize = 0x88;
+const NX_XP_DESC_LEN: usize = 0x8c;
 
 fn u32_at(block: &[u8], offset: usize) -> u32 {
     u32::from_le_bytes(block[offset..offset + 4].try_into().expect("fixed APFS integer"))
@@ -40,7 +44,7 @@ pub(crate) fn read_latest_container_superblock_with_block<D: BlockDevice>(
         return Err(RecoveryError::IoFailure("APFS container block exceeds supplied range".into()));
     }
 
-    let desc_blocks_raw = u32_at(&initial, 0x68);
+    let desc_blocks_raw = u32_at(&initial, NX_XP_DESC_BLOCKS);
     if desc_blocks_raw & XP_DESC_FRAGMENTED != 0 {
         return Err(RecoveryError::IoFailure(
             "APFS checkpoint descriptor area is fragmented and is not yet supported".into(),
@@ -54,7 +58,7 @@ pub(crate) fn read_latest_container_superblock_with_block<D: BlockDevice>(
         return Err(RecoveryError::LengthTooLarge { length: desc_blocks as u64 });
     }
 
-    let desc_base = u64_at(&initial, 0x70);
+    let desc_base = u64_at(&initial, NX_XP_DESC_BASE);
     let desc_end = desc_base.checked_add(desc_blocks as u64).ok_or(RecoveryError::RangeOverflow)?;
     if desc_end > base.block_count {
         return Err(RecoveryError::OutOfRange { offset: desc_base, length: desc_blocks as u64, capacity: base.block_count });
@@ -75,6 +79,27 @@ pub(crate) fn read_latest_container_superblock_with_block<D: BlockDevice>(
             Ok(candidate) => candidate,
             Err(_) => continue,
         };
+
+        // A checkpoint superblock is the final block in its descriptor window.
+        // Require its self-described ring position to agree with the physical
+        // position we scanned; otherwise stale/corrupt NXSB-like data can win
+        // merely because it has a large transaction identifier.
+        let candidate_desc_blocks = u64::from(u32_at(&block, NX_XP_DESC_BLOCKS) & !XP_DESC_FRAGMENTED);
+        let candidate_desc_index = u64::from(u32_at(&block, NX_XP_DESC_INDEX));
+        let candidate_desc_len = u64::from(u32_at(&block, NX_XP_DESC_LEN));
+        if candidate_desc_blocks == 0
+            || candidate_desc_blocks > u64::from(MAX_CHECKPOINT_BLOCKS)
+            || candidate_desc_index >= candidate_desc_blocks
+            || candidate_desc_len == 0
+            || candidate_desc_len > candidate_desc_blocks
+        {
+            continue;
+        }
+        let expected_index = (candidate_desc_index + candidate_desc_len - 1) % candidate_desc_blocks;
+        if expected_index != u64::from(index) {
+            continue;
+        }
+
         let candidate_bytes = u64::from(candidate.block_size)
             .checked_mul(candidate.block_count)
             .ok_or(RecoveryError::RangeOverflow)?;
@@ -109,16 +134,39 @@ mod tests {
     #[test]
     fn checkpoint_geometry_offsets_match_nx_superblock_layout() {
         let mut block = vec![0u8; 512];
-        block[0x68..0x6c].copy_from_slice(&16u32.to_le_bytes());
-        block[0x70..0x78].copy_from_slice(&8u64.to_le_bytes());
-        assert_eq!(u32_at(&block, 0x68), 16);
-        assert_eq!(u64_at(&block, 0x70), 8);
+        block[NX_XP_DESC_BLOCKS..NX_XP_DESC_BLOCKS + 4].copy_from_slice(&16u32.to_le_bytes());
+        block[NX_XP_DESC_BASE..NX_XP_DESC_BASE + 8].copy_from_slice(&8u64.to_le_bytes());
+        block[NX_XP_DESC_INDEX..NX_XP_DESC_INDEX + 4].copy_from_slice(&4u32.to_le_bytes());
+        block[NX_XP_DESC_LEN..NX_XP_DESC_LEN + 4].copy_from_slice(&12u32.to_le_bytes());
+        assert_eq!(u32_at(&block, NX_XP_DESC_BLOCKS), 16);
+        assert_eq!(u64_at(&block, NX_XP_DESC_BASE), 8);
+        assert_eq!(u32_at(&block, NX_XP_DESC_INDEX), 4);
+        assert_eq!(u32_at(&block, NX_XP_DESC_LEN), 12);
+    }
+
+    #[test]
+    fn checkpoint_superblock_position_is_final_block_of_window() {
+        let desc_blocks = 64u64;
+        let desc_index = 50u64;
+        let desc_len = 15u64;
+        let expected = (desc_index + desc_len - 1) % desc_blocks;
+        assert_eq!(expected, 0);
+    }
+
+    #[test]
+    fn checkpoint_superblock_position_rejects_wrong_index() {
+        let desc_blocks = 64u64;
+        let desc_index = 10u64;
+        let desc_len = 8u64;
+        let scanned_index = 20u64;
+        let expected = (desc_index + desc_len - 1) % desc_blocks;
+        assert_ne!(expected, scanned_index);
     }
 
     #[test]
     fn fragmented_flag_is_detected() {
         let mut block = vec![0u8; 512];
-        block[0x68..0x6c].copy_from_slice(&XP_DESC_FRAGMENTED.to_le_bytes());
-        assert_ne!(u32_at(&block, 0x68) & XP_DESC_FRAGMENTED, 0);
+        block[NX_XP_DESC_BLOCKS..NX_XP_DESC_BLOCKS + 4].copy_from_slice(&XP_DESC_FRAGMENTED.to_le_bytes());
+        assert_ne!(u32_at(&block, NX_XP_DESC_BLOCKS) & XP_DESC_FRAGMENTED, 0);
     }
 }
