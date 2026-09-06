@@ -1,7 +1,7 @@
 use recovery_core::{ByteRange, RecoveryResult};
 use storage_io::BlockDevice;
 
-use crate::{read_volume_filesystem_index, recover_regular_files, ApfsContainer, ApfsDiscoveredVolume, ApfsRecoveredFile};
+use crate::{read_volume_filesystem_index, recover_regular_files, for_each_regular_file_chunk, ApfsContainer, ApfsDiscoveredVolume, ApfsRecoveredFile, ApfsRecoveredFileHeader};
 
 /// Build the catalog index and recover regular files from one discovered APFS volume.
 ///
@@ -23,6 +23,41 @@ pub fn recover_discovered_volume_files<D: BlockDevice>(
         discovered.xid,
     )?;
     recover_regular_files(&index, device, range, container.block_size)
+}
+
+/// Stream regular files from one discovered APFS volume without retaining the
+/// complete recovery result in memory.
+///
+/// The callback receives the file header and each bounded data chunk in logical
+/// file order. The catalog is indexed once, then the existing extent streaming
+/// path is reused for every regular file.
+pub fn for_each_discovered_volume_file_chunk<D, F>(
+    device: &D,
+    range: ByteRange,
+    container: &ApfsContainer,
+    discovered: &ApfsDiscoveredVolume,
+    chunk_size: usize,
+    mut visit: F,
+) -> RecoveryResult<()>
+where
+    D: BlockDevice,
+    F: FnMut(&ApfsRecoveredFileHeader, u64, &[u8]) -> RecoveryResult<()>,
+{
+    let index = read_volume_filesystem_index(
+        device,
+        range,
+        container,
+        &discovered.volume,
+        discovered.xid,
+    )?;
+    for_each_regular_file_chunk(
+        &index,
+        device,
+        range,
+        container.block_size,
+        chunk_size,
+        |header, offset, chunk| visit(header, offset, chunk),
+    )
 }
 
 #[cfg(test)]
