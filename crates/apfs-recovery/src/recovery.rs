@@ -13,19 +13,22 @@ pub struct ApfsRecoveredFile {
     pub data: Vec<u8>,
 }
 
-/// Recover every catalog entry whose inode identifies it as a regular file.
+/// Visit every catalog entry whose inode identifies it as a regular file.
 ///
-/// Directory entries without an inode or without a DSTREAM are skipped so one
-/// damaged record does not abort recovery of unrelated files. Individual data
-/// reconstruction errors are still returned because silently emitting corrupt
-/// bytes would be worse than stopping the caller at the damaged file.
-pub fn recover_regular_files<D: BlockDevice>(
+/// The callback receives one fully reconstructed file at a time. This avoids
+/// retaining the entire recovered volume in memory, which is important when a
+/// recovery image contains large files or many files.
+pub fn for_each_regular_file<D, F>(
     index: &ApfsFilesystemIndex,
     device: &D,
     container_range: ByteRange,
     block_size: u32,
-) -> RecoveryResult<Vec<ApfsRecoveredFile>> {
-    let mut files = Vec::new();
+    mut visit: F,
+) -> RecoveryResult<()>
+where
+    D: BlockDevice,
+    F: FnMut(ApfsRecoveredFile) -> RecoveryResult<()>,
+{
     for entry in &index.directories {
         let Some(inode) = index.inodes.get(&entry.file_id) else {
             continue;
@@ -39,8 +42,27 @@ pub fn recover_regular_files<D: BlockDevice>(
         let path = index.path_for_entry(entry)?;
         let data = index.read_entry_data(device, container_range, block_size, entry)?;
         debug_assert_eq!(data.len() as u64, size);
-        files.push(ApfsRecoveredFile { path, size, data });
+        visit(ApfsRecoveredFile { path, size, data })?;
     }
+    Ok(())
+}
+
+/// Recover every catalog entry whose inode identifies it as a regular file.
+///
+/// This convenience API collects all recovered files in memory. Call
+/// `for_each_regular_file` for large recoveries where the caller can write each
+/// file immediately instead.
+pub fn recover_regular_files<D: BlockDevice>(
+    index: &ApfsFilesystemIndex,
+    device: &D,
+    container_range: ByteRange,
+    block_size: u32,
+) -> RecoveryResult<Vec<ApfsRecoveredFile>> {
+    let mut files = Vec::new();
+    for_each_regular_file(index, device, container_range, block_size, |file| {
+        files.push(file);
+        Ok(())
+    })?;
     Ok(files)
 }
 
