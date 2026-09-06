@@ -13,6 +13,7 @@ mod omap_lookup;
 mod recovery;
 mod volume_discovery;
 mod volume_omap;
+mod volume_recovery;
 pub use btree::{btree_entries, btree_fixed_entries, btree_variable_entries, parse_btree_node, ApfsBtreeEntry, ApfsBtreeNode, ApfsBtreeVariableEntry, ApfsFixedBtreeEntry, ApfsVariableBtreeEntry};
 pub use catalog::{read_catalog_records, read_volume_catalog_records, ApfsCatalogRecord};
 pub use checkpoint::read_latest_container_superblock;
@@ -23,6 +24,7 @@ pub use omap_lookup::lookup_object_map;
 pub use recovery::{find_entry_by_path, recover_regular_files, ApfsRecoveredFile};
 pub use volume_discovery::{container_volume_oids, discover_volumes, read_volume_superblock, ApfsDiscoveredVolume};
 pub use volume_omap::{lookup_volume_object, resolve_volume_root};
+pub use volume_recovery::recover_discovered_volume_files;
 
 const NXSB_MAGIC: u32 = 0x4253_584e;
 const APSB_MAGIC: u32 = 0x4253_5041;
