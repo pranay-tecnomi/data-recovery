@@ -15,15 +15,14 @@ fn u64_at(block: &[u8], offset: usize) -> u64 {
     u64::from_le_bytes(block[offset..offset + 8].try_into().expect("fixed APFS integer"))
 }
 
-/// Locate the newest valid container superblock stored in the contiguous
-/// checkpoint descriptor area. APFS keeps block zero as a copy, while the
-/// checkpoint ring contains newer NX superblocks identified by their XID.
-/// Fragmented checkpoint descriptor areas are rejected until their extent-list
-/// tree can be resolved safely.
-pub fn read_latest_container_superblock<D: BlockDevice>(
+/// Locate the newest valid container superblock and return its physical block
+/// together with the parsed container metadata. The physical block is needed
+/// by discovery because the selected checkpoint may contain newer filesystem
+/// object identifiers than block zero.
+pub(crate) fn read_latest_container_superblock_with_block<D: BlockDevice>(
     device: &D,
     range: ByteRange,
-) -> RecoveryResult<ApfsContainer> {
+) -> RecoveryResult<(ApfsContainer, Vec<u8>)> {
     range.validate_within(device.capacity())?;
     let initial_len = range.length.min(65_536) as usize;
     let mut initial = vec![0u8; initial_len];
@@ -41,7 +40,7 @@ pub fn read_latest_container_superblock<D: BlockDevice>(
     }
     let desc_blocks = desc_blocks_raw;
     if desc_blocks == 0 {
-        return Ok(base);
+        return Ok((base, initial[..base.block_size as usize].to_vec()));
     }
     if desc_blocks > MAX_CHECKPOINT_BLOCKS {
         return Err(RecoveryError::LengthTooLarge { length: desc_blocks as u64 });
@@ -53,7 +52,7 @@ pub fn read_latest_container_superblock<D: BlockDevice>(
         return Err(RecoveryError::OutOfRange { offset: desc_base, length: desc_blocks as u64, capacity: base.block_count });
     }
 
-    let mut best: Option<(u64, ApfsContainer)> = None;
+    let mut best: Option<(u64, ApfsContainer, Vec<u8>)> = None;
     for index in 0..desc_blocks {
         let oid = desc_base.checked_add(index as u64).ok_or(RecoveryError::RangeOverflow)?;
         let block = read_object(device, range, &base, oid)?;
@@ -71,12 +70,25 @@ pub fn read_latest_container_superblock<D: BlockDevice>(
         if candidate_bytes > range.length {
             continue;
         }
-        if best.as_ref().map(|(xid, _)| header.xid > *xid).unwrap_or(true) {
-            best = Some((header.xid, candidate));
+        if best.as_ref().map(|(xid, _, _)| header.xid > *xid).unwrap_or(true) {
+            best = Some((header.xid, candidate, block));
         }
     }
 
-    Ok(best.map(|(_, container)| container).unwrap_or(base))
+    Ok(best.map(|(_, container, block)| (container, block)).unwrap_or_else(|| {
+        let block = initial[..base.block_size as usize].to_vec();
+        (base, block)
+    }))
+}
+
+/// Locate the newest valid container superblock stored in the checkpoint
+/// descriptor area. Falls back to block zero when no newer valid checkpoint
+/// superblock is present.
+pub fn read_latest_container_superblock<D: BlockDevice>(
+    device: &D,
+    range: ByteRange,
+) -> RecoveryResult<ApfsContainer> {
+    Ok(read_latest_container_superblock_with_block(device, range)?.0)
 }
 
 #[cfg(test)]
