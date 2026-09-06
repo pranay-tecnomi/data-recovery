@@ -7,6 +7,7 @@ mod btree;
 mod catalog;
 mod checkpoint;
 mod checksum;
+mod container_recovery;
 mod filesystem;
 mod fsrecord;
 mod omap;
@@ -19,6 +20,7 @@ pub use btree::{btree_entries, btree_fixed_entries, btree_variable_entries, pars
 pub use catalog::{read_catalog_records, read_volume_catalog_records, ApfsCatalogRecord};
 pub use checkpoint::read_latest_container_superblock;
 pub use checksum::{fletcher64, verify_fletcher64};
+pub use container_recovery::{for_each_discovered_volume_file, recover_discovered_volumes};
 pub use filesystem::{decode_file_extent_key, index_catalog_records, read_file_extents, read_volume_filesystem_index, ApfsDirectoryEntry, ApfsFileExtent, ApfsFilesystemIndex};
 pub use fsrecord::{decode_drec_key, decode_hashed_drec_key, decode_dir_record_value, decode_file_extent_value, decode_inode_value, decode_jkey, extent_is_sparse, extent_length, ApfsDrecKey, ApfsDirRecordValue, ApfsFileExtentValue, ApfsInodeValue, ApfsJKey, APFS_TYPE_DIR_REC, APFS_TYPE_FILE_EXTENT, APFS_TYPE_INODE};
 pub use omap::{parse_object_map, parse_object_map_key, parse_object_map_value, ApfsObjectMap, ApfsObjectMapKey, ApfsObjectMapValue};
