@@ -3,7 +3,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use recovery_core::{ByteRange, RecoveryError, RecoveryResult};
 use storage_io::BlockDevice;
 
-use crate::{decode_dir_record_value, decode_drec_key, decode_file_extent_value, decode_hashed_drec_key, decode_inode_value, decode_jkey, extent_is_sparse, extent_length, ApfsCatalogRecord, ApfsDrecKey, ApfsFileExtentValue, ApfsInodeValue, APFS_TYPE_DIR_REC, APFS_TYPE_FILE_EXTENT, APFS_TYPE_INODE};
+use crate::{decode_dir_record_value, decode_drec_key, decode_file_extent_value, decode_hashed_drec_key, decode_inode_value, decode_jkey, extent_is_sparse, extent_length, read_volume_catalog_records, ApfsCatalogRecord, ApfsDrecKey, ApfsFileExtentValue, ApfsVolume, APFS_TYPE_DIR_REC, APFS_TYPE_FILE_EXTENT, APFS_TYPE_INODE};
 
 const DREC_HASHED_HEADER_LEN: usize = 12;
 const EXTENT_KEY_LEN: usize = 16;
@@ -28,7 +28,7 @@ pub struct ApfsFileExtent {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ApfsFilesystemIndex {
     pub directories: Vec<ApfsDirectoryEntry>,
-    pub inodes: BTreeMap<u64, ApfsInodeValue>,
+    pub inodes: BTreeMap<u64, crate::ApfsInodeValue>,
     pub extents: BTreeMap<u64, Vec<ApfsFileExtent>>,
 }
 
@@ -71,6 +71,20 @@ pub fn index_catalog_records(records: &[ApfsCatalogRecord]) -> RecoveryResult<Ap
     }
     for file_extents in extents.values_mut() { file_extents.sort_by_key(|extent| extent.logical_offset); }
     Ok(ApfsFilesystemIndex { directories, inodes, extents })
+}
+
+/// Read and index a volume's catalog using the volume OMAP and its own
+/// superblock transaction ID. This is the end-to-end bridge from a discovered
+/// APFS volume to recoverable directory/inode/extent metadata.
+pub fn read_volume_filesystem_index<D: BlockDevice>(
+    device: &D,
+    range: ByteRange,
+    container: &crate::ApfsContainer,
+    volume: &ApfsVolume,
+    xid: u64,
+) -> RecoveryResult<ApfsFilesystemIndex> {
+    let records = read_volume_catalog_records(device, range, container, volume, xid)?;
+    index_catalog_records(&records)
 }
 
 /// Reconstruct one file from physical APFS extents. Sparse extents and holes are zero-filled.
