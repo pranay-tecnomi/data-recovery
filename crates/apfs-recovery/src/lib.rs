@@ -21,7 +21,7 @@ pub use filesystem::{decode_file_extent_key, index_catalog_records, read_file_ex
 pub use fsrecord::{decode_drec_key, decode_hashed_drec_key, decode_dir_record_value, decode_file_extent_value, decode_inode_value, decode_jkey, extent_is_sparse, extent_length, ApfsDrecKey, ApfsDirRecordValue, ApfsFileExtentValue, ApfsInodeValue, ApfsJKey, APFS_TYPE_DIR_REC, APFS_TYPE_FILE_EXTENT, APFS_TYPE_INODE};
 pub use omap::{parse_object_map, parse_object_map_key, parse_object_map_value, ApfsObjectMap, ApfsObjectMapKey, ApfsObjectMapValue};
 pub use omap_lookup::lookup_object_map;
-pub use recovery::{find_entry_by_path, recover_regular_files, ApfsRecoveredFile};
+pub use recovery::{find_entry_by_path, for_each_regular_file, recover_regular_files, ApfsRecoveredFile};
 pub use volume_discovery::{container_volume_oids, discover_volumes, read_volume_superblock, ApfsDiscoveredVolume};
 pub use volume_omap::{lookup_volume_object, resolve_volume_root};
 pub use volume_recovery::recover_discovered_volume_files;
