@@ -86,6 +86,67 @@ pub fn read_file_extents<D: BlockDevice>(device: &D, container_range: ByteRange,
     Ok(output)
 }
 
+/// Stream a file's extent data without allocating a buffer proportional to the
+/// complete file size. Sparse extents are emitted as zero-filled chunks.
+///
+/// The callback receives `(logical_offset, chunk)` in ascending logical order.
+/// Physical reads are bounded by `chunk_size`, making this suitable for large
+/// recovery outputs where `read_file_extents` would otherwise allocate the
+/// entire file in memory.
+pub fn for_each_file_extent_chunk<D, F>(
+    device: &D,
+    container_range: ByteRange,
+    block_size: u32,
+    extents: &[ApfsFileExtent],
+    file_size: u64,
+    chunk_size: usize,
+    mut visit: F,
+) -> RecoveryResult<()>
+where
+    D: BlockDevice,
+    F: FnMut(u64, &[u8]) -> RecoveryResult<()>,
+{
+    if block_size == 0 || !block_size.is_power_of_two() { return Err(RecoveryError::IoFailure("invalid APFS block size".into())); }
+    if chunk_size == 0 { return Err(RecoveryError::IoFailure("invalid APFS extent chunk size".into())); }
+    if file_size > container_range.length { return Err(RecoveryError::OutOfRange { offset: 0, length: file_size, capacity: container_range.length }); }
+    let container_end = container_range.offset.checked_add(container_range.length).ok_or(RecoveryError::RangeOverflow)?;
+    let mut previous_end = 0u64;
+    for extent in extents {
+        if extent.length == 0 { continue; }
+        let end = extent.logical_offset.checked_add(extent.length).ok_or(RecoveryError::RangeOverflow)?;
+        if extent.logical_offset < previous_end { return Err(RecoveryError::IoFailure("APFS file extents overlap".into())); }
+        previous_end = end;
+        if end > file_size { return Err(RecoveryError::OutOfRange { offset: extent.logical_offset, length: extent.length, capacity: file_size }); }
+        if extent.crypto_id != 0 { return Err(RecoveryError::IoFailure("encrypted APFS extent requires key material".into())); }
+        let mut logical = extent.logical_offset;
+        let mut remaining = extent.length;
+        while remaining != 0 {
+            let amount = remaining.min(chunk_size as u64);
+            let amount_usize = usize::try_from(amount).map_err(|_| RecoveryError::LengthTooLarge { length: amount })?;
+            if extent.sparse {
+                let zeros = vec![0u8; amount_usize];
+                visit(logical, &zeros)?;
+            } else {
+                let block_relative = extent.physical_block.checked_mul(u64::from(block_size)).ok_or(RecoveryError::RangeOverflow)?;
+                let within_extent = logical.checked_sub(extent.logical_offset).ok_or(RecoveryError::RangeOverflow)?;
+                let physical = container_range.offset
+                    .checked_add(block_relative).and_then(|offset| offset.checked_add(within_extent))
+                    .ok_or(RecoveryError::RangeOverflow)?;
+                let physical_end = physical.checked_add(amount).ok_or(RecoveryError::RangeOverflow)?;
+                if physical_end > container_end { return Err(RecoveryError::OutOfRange { offset: physical, length: amount, capacity: container_end }); }
+                let read_range = ByteRange::new(physical, amount)?;
+                read_range.validate_within(device.capacity())?;
+                let mut buffer = vec![0u8; amount_usize];
+                if device.read(read_range, &mut buffer)? != amount_usize { return Err(RecoveryError::IoFailure("short APFS extent read".into())); }
+                visit(logical, &buffer)?;
+            }
+            logical = logical.checked_add(amount).ok_or(RecoveryError::RangeOverflow)?;
+            remaining -= amount;
+        }
+    }
+    Ok(())
+}
+
 impl ApfsFilesystemIndex {
     pub fn path_for_entry(&self, entry: &ApfsDirectoryEntry) -> RecoveryResult<String> {
         let mut components = vec![entry.name.clone()]; let mut current = entry.parent_id; let mut seen = HashSet::new();
@@ -126,5 +187,7 @@ mod tests {
     #[test] fn rejects_directory_cycle() { let a=ApfsDirectoryEntry{parent_id:3,file_id:2,name:"a".into(),flags:0}; let b=ApfsDirectoryEntry{parent_id:2,file_id:3,name:"b".into(),flags:0}; let index=ApfsFilesystemIndex{directories:vec![a.clone(),b],inodes:BTreeMap::new(),extents:BTreeMap::new(),xattrs:BTreeMap::new()}; assert!(index.path_for_entry(&a).is_err()); }
     #[test] fn rejects_untrusted_file_size_before_allocation() { let image=MemoryDevice{data:Arc::new(Mutex::new(vec![0u8;16]))}; let result=read_file_extents(&image,ByteRange::new(0,16).unwrap(),4,&[],u64::MAX); assert!(result.is_err()); }
     #[test] fn reconstructs_sparse_and_physical_extents() { let image=MemoryDevice{data:Arc::new(Mutex::new(vec![0,0,0,0,0x41,0x42,0x43,0x44,0,0,0,0,0x51,0x52,0x53,0x54]))}; let extents=vec![ApfsFileExtent{logical_offset:0,length:4,physical_block:1,crypto_id:0,sparse:false},ApfsFileExtent{logical_offset:4,length:4,physical_block:0,crypto_id:0,sparse:true},ApfsFileExtent{logical_offset:8,length:4,physical_block:3,crypto_id:0,sparse:false}]; let output=read_file_extents(&image,ByteRange::new(0,16).unwrap(),4,&extents,12).unwrap(); assert_eq!(output,b"ABCD\0\0\0\0QRST"); }
+    #[test] fn streams_extent_chunks_without_full_file_allocation() { let image=MemoryDevice{data:Arc::new(Mutex::new(vec![0,0,0,0,0x41,0x42,0x43,0x44,0,0,0,0,0x51,0x52,0x53,0x54]))}; let extents=vec![ApfsFileExtent{logical_offset:0,length:4,physical_block:1,crypto_id:0,sparse:false},ApfsFileExtent{logical_offset:4,length:4,physical_block:0,crypto_id:0,sparse:true},ApfsFileExtent{logical_offset:8,length:4,physical_block:3,crypto_id:0,sparse:false}]; let mut chunks=Vec::new(); for_each_file_extent_chunk(&image,ByteRange::new(0,16).unwrap(),4,&extents,12,2,|offset,data| { chunks.push((offset,data.to_vec())); Ok(()) }).unwrap(); assert_eq!(chunks,vec![(0,b"AB".to_vec()),(2,b"CD".to_vec()),(4,vec![0,0]),(6,vec![0,0]),(8,b"QR".to_vec()),(10,b"ST".to_vec())]); }
+    #[test] fn rejects_invalid_chunk_size() { let image=MemoryDevice{data:Arc::new(Mutex::new(vec![0u8;16]))}; assert!(for_each_file_extent_chunk(&image,ByteRange::new(0,16).unwrap(),4,&[],0,0,|_,_| Ok(())).is_err()); }
     #[test] fn rejects_overlapping_or_encrypted_extents() { let image=MemoryDevice{data:Arc::new(Mutex::new(vec![0u8;16]))}; let overlap=vec![ApfsFileExtent{logical_offset:0,length:8,physical_block:0,crypto_id:0,sparse:true},ApfsFileExtent{logical_offset:4,length:4,physical_block:0,crypto_id:0,sparse:true}]; assert!(read_file_extents(&image,ByteRange::new(0,16).unwrap(),4,&overlap,8).is_err()); let encrypted=vec![ApfsFileExtent{logical_offset:0,length:4,physical_block:0,crypto_id:1,sparse:false}]; assert!(read_file_extents(&image,ByteRange::new(0,16).unwrap(),4,&encrypted,4).is_err()); }
 }
