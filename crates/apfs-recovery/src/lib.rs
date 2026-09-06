@@ -33,7 +33,7 @@ pub use snapshot::{index_snapshot_records, list_snapshots, mount_snapshot, ApfsS
 pub use symlink::{recover_symlinks, ApfsRecoveredSymlink};
 pub use volume_discovery::{container_volume_oids, discover_volumes, read_volume_superblock, ApfsDiscoveredVolume};
 pub use volume_omap::{lookup_volume_object, resolve_volume_root};
-pub use volume_recovery::recover_discovered_volume_files;
+pub use volume_recovery::{for_each_discovered_volume_file_chunk, recover_discovered_volume_files};
 pub use xattr::{decode_xattr_key, decode_xattr_value, index_xattrs, read_xattr_data, ApfsXattr, XATTR_DATA_EMBEDDED, XATTR_DATA_STREAM};
 
 const NXSB_MAGIC: u32 = 0x4253_584e;
