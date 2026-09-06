@@ -3,7 +3,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use recovery_core::{ByteRange, RecoveryError, RecoveryResult};
 use storage_io::BlockDevice;
 
-use crate::{decode_dir_record_value, decode_drec_key, decode_file_extent_value, decode_hashed_drec_key, decode_inode_value, decode_jkey, extent_is_sparse, extent_length, read_volume_catalog_records, ApfsCatalogRecord, ApfsDrecKey, ApfsFileExtentValue, ApfsVolume, APFS_TYPE_DIR_REC, APFS_TYPE_FILE_EXTENT, APFS_TYPE_INODE};
+use crate::{decode_dir_record_value, decode_drec_key, decode_file_extent_value, decode_hashed_drec_key, decode_inode_value, decode_jkey, extent_is_sparse, extent_length, index_xattrs, read_volume_catalog_records, ApfsCatalogRecord, ApfsDrecKey, ApfsFileExtentValue, ApfsVolume, ApfsXattr, APFS_TYPE_DIR_REC, APFS_TYPE_FILE_EXTENT, APFS_TYPE_INODE, APFS_TYPE_XATTR};
 
 const DREC_HASHED_HEADER_LEN: usize = 12;
 const EXTENT_KEY_LEN: usize = 16;
@@ -18,6 +18,8 @@ pub struct ApfsFilesystemIndex {
     pub inodes: BTreeMap<u64, crate::ApfsInodeValue>,
     /// FILE_EXTENT records are keyed by the inode's `private_id` (the dstream OID), not the inode OID.
     pub extents: BTreeMap<u64, Vec<ApfsFileExtent>>,
+    /// Extended attributes indexed by their owning inode object ID.
+    pub xattrs: BTreeMap<u64, Vec<ApfsXattr>>,
 }
 
 fn decode_drec(data: &[u8]) -> RecoveryResult<ApfsDrecKey> {
@@ -45,8 +47,9 @@ pub fn index_catalog_records(records: &[ApfsCatalogRecord]) -> RecoveryResult<Ap
             _ => {}
         }
     }
+    let xattrs = index_xattrs(records)?;
     for file_extents in extents.values_mut() { file_extents.sort_by_key(|extent| extent.logical_offset); }
-    Ok(ApfsFilesystemIndex { directories, inodes, extents })
+    Ok(ApfsFilesystemIndex { directories, inodes, extents, xattrs })
 }
 
 pub fn read_volume_filesystem_index<D: BlockDevice>(device: &D, range: ByteRange, container: &crate::ApfsContainer, volume: &ApfsVolume, xid: u64) -> RecoveryResult<ApfsFilesystemIndex> {
@@ -99,6 +102,11 @@ impl ApfsFilesystemIndex {
         let extents = self.extents.get(&inode.private_id).map(Vec::as_slice).unwrap_or(&[]);
         read_file_extents(device, container_range, block_size, extents, file_size)
     }
+
+    /// Return the extended attributes owned by a directory entry's inode.
+    pub fn xattrs_for_entry(&self, entry: &ApfsDirectoryEntry) -> &[ApfsXattr] {
+        self.xattrs.get(&entry.file_id).map(Vec::as_slice).unwrap_or(&[])
+    }
 }
 
 #[cfg(test)]
@@ -113,8 +121,9 @@ mod tests {
     fn jkey(ty: u64, oid: u64) -> Vec<u8> { ((ty << 60) | oid).to_le_bytes().to_vec() }
     #[test] fn decodes_extent_key() { let mut key=jkey(8,55); key.extend_from_slice(&4096u64.to_le_bytes()); assert_eq!(decode_file_extent_key(&key).unwrap(),(55,4096)); }
     #[test] fn rejects_extent_key_with_wrong_type() { let mut key=jkey(3,55); key.extend_from_slice(&0u64.to_le_bytes()); assert!(decode_file_extent_key(&key).is_err()); }
-    #[test] fn joins_catalog_records_and_sorts_extents() { let mut dir_key=jkey(9,2); dir_key.extend_from_slice(&5u16.to_le_bytes()); dir_key.extend_from_slice(b"file\0"); let mut dir_value=vec![0u8;18]; dir_value[0..8].copy_from_slice(&42u64.to_le_bytes()); let inode_key=jkey(3,42); let mut inode_value=vec![0u8;92]; inode_value[8..16].copy_from_slice(&77u64.to_le_bytes()); let mut extent_key_a=jkey(8,77); extent_key_a.extend_from_slice(&8192u64.to_le_bytes()); let mut extent_value_a=vec![0u8;24]; extent_value_a[0..8].copy_from_slice(&4096u64.to_le_bytes()); extent_value_a[8..16].copy_from_slice(&100u64.to_le_bytes()); let mut extent_key_b=jkey(8,77); extent_key_b.extend_from_slice(&0u64.to_le_bytes()); let mut extent_value_b=vec![0u8;24]; extent_value_b[0..8].copy_from_slice(&4096u64.to_le_bytes()); extent_value_b[8..16].copy_from_slice(&99u64.to_le_bytes()); let records=vec![ApfsCatalogRecord{key:dir_key,value:dir_value},ApfsCatalogRecord{key:inode_key,value:inode_value},ApfsCatalogRecord{key:extent_key_a,value:extent_value_a},ApfsCatalogRecord{key:extent_key_b,value:extent_value_b}]; let index=index_catalog_records(&records).unwrap(); assert_eq!(index.directories[0].file_id,42); assert_eq!(index.inodes[&42].private_id,77); assert_eq!(index.extents[&77][0].logical_offset,0); assert_eq!(index.extents[&77][1].physical_block,100); assert_eq!(index.path_for_entry(&index.directories[0]).unwrap(),"/file"); }
-    #[test] fn rejects_directory_cycle() { let a=ApfsDirectoryEntry{parent_id:3,file_id:2,name:"a".into(),flags:0}; let b=ApfsDirectoryEntry{parent_id:2,file_id:3,name:"b".into(),flags:0}; let index=ApfsFilesystemIndex{directories:vec![a.clone(),b],inodes:BTreeMap::new(),extents:BTreeMap::new()}; assert!(index.path_for_entry(&a).is_err()); }
+    #[test] fn joins_catalog_records_and_sorts_extents() { let mut dir_key=jkey(9,2); dir_key.extend_from_slice(&5u16.to_le_bytes()); dir_key.extend_from_slice(b"file\0"); let dir_value= { let mut v=vec![0u8;18]; v[0..8].copy_from_slice(&42u64.to_le_bytes()); v }; let inode_key=jkey(3,42); let mut inode_value=vec![0u8;92]; inode_value[8..16].copy_from_slice(&77u64.to_le_bytes()); let mut extent_key_a=jkey(8,77); extent_key_a.extend_from_slice(&8192u64.to_le_bytes()); let mut extent_value_a=vec![0u8;24]; extent_value_a[0..8].copy_from_slice(&4096u64.to_le_bytes()); extent_value_a[8..16].copy_from_slice(&100u64.to_le_bytes()); let mut extent_key_b=jkey(8,77); extent_key_b.extend_from_slice(&0u64.to_le_bytes()); let mut extent_value_b=vec![0u8;24]; extent_value_b[0..8].copy_from_slice(&4096u64.to_le_bytes()); extent_value_b[8..16].copy_from_slice(&99u64.to_le_bytes()); let records=vec![ApfsCatalogRecord{key:dir_key,value:dir_value},ApfsCatalogRecord{key:inode_key,value:inode_value},ApfsCatalogRecord{key:extent_key_a,value:extent_value_a},ApfsCatalogRecord{key:extent_key_b,value:extent_value_b}]; let index=index_catalog_records(&records).unwrap(); assert_eq!(index.directories[0].file_id,42); assert_eq!(index.inodes[&42].private_id,77); assert_eq!(index.extents[&77][0].logical_offset,0); assert_eq!(index.extents[&77][1].physical_block,100); assert!(index.xattrs.is_empty()); assert_eq!(index.path_for_entry(&index.directories[0]).unwrap(),"/file"); }
+    #[test] fn indexes_xattrs_with_their_inode() { let mut key=jkey(4,42); key.extend_from_slice(&7u16.to_le_bytes()); key.extend_from_slice(b"author\0"); let value=[XATTR_DATA_EMBEDDED as u8,0,5,0,b'a',b'l',b'i',b'c',b'e']; let index=index_catalog_records(&[ApfsCatalogRecord{key,value:value.to_vec()}]).unwrap(); let entry=ApfsDirectoryEntry{parent_id:0,file_id:42,name:"file".into(),flags:0}; assert_eq!(index.xattrs_for_entry(&entry)[0].name,"author"); assert_eq!(index.xattrs_for_entry(&entry)[0].data,b"alice"); }
+    #[test] fn rejects_directory_cycle() { let a=ApfsDirectoryEntry{parent_id:3,file_id:2,name:"a".into(),flags:0}; let b=ApfsDirectoryEntry{parent_id:2,file_id:3,name:"b".into(),flags:0}; let index=ApfsFilesystemIndex{directories:vec![a.clone(),b],inodes:BTreeMap::new(),extents:BTreeMap::new(),xattrs:BTreeMap::new()}; assert!(index.path_for_entry(&a).is_err()); }
     #[test] fn rejects_untrusted_file_size_before_allocation() { let image=MemoryDevice{data:Arc::new(Mutex::new(vec![0u8;16]))}; let result=read_file_extents(&image,ByteRange::new(0,16).unwrap(),4,&[],u64::MAX); assert!(result.is_err()); }
     #[test] fn reconstructs_sparse_and_physical_extents() { let image=MemoryDevice{data:Arc::new(Mutex::new(vec![0,0,0,0,0x41,0x42,0x43,0x44,0,0,0,0,0x51,0x52,0x53,0x54]))}; let extents=vec![ApfsFileExtent{logical_offset:0,length:4,physical_block:1,crypto_id:0,sparse:false},ApfsFileExtent{logical_offset:4,length:4,physical_block:0,crypto_id:0,sparse:true},ApfsFileExtent{logical_offset:8,length:4,physical_block:3,crypto_id:0,sparse:false}]; let output=read_file_extents(&image,ByteRange::new(0,16).unwrap(),4,&extents,12).unwrap(); assert_eq!(output,b"ABCD\0\0\0\0QRST"); }
     #[test] fn rejects_overlapping_or_encrypted_extents() { let image=MemoryDevice{data:Arc::new(Mutex::new(vec![0u8;16]))}; let overlap=vec![ApfsFileExtent{logical_offset:0,length:8,physical_block:0,crypto_id:0,sparse:true},ApfsFileExtent{logical_offset:4,length:4,physical_block:0,crypto_id:0,sparse:true}]; assert!(read_file_extents(&image,ByteRange::new(0,16).unwrap(),4,&overlap,8).is_err()); let encrypted=vec![ApfsFileExtent{logical_offset:0,length:4,physical_block:0,crypto_id:1,sparse:false}]; assert!(read_file_extents(&image,ByteRange::new(0,16).unwrap(),4,&encrypted,4).is_err()); }
