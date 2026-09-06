@@ -13,6 +13,7 @@ mod fsrecord;
 mod omap;
 mod omap_lookup;
 mod recovery;
+mod symlink;
 mod volume_discovery;
 mod volume_omap;
 mod volume_recovery;
@@ -27,6 +28,7 @@ pub use fsrecord::{decode_drec_key, decode_hashed_drec_key, decode_dir_record_va
 pub use omap::{parse_object_map, parse_object_map_key, parse_object_map_value, ApfsObjectMap, ApfsObjectMapKey, ApfsObjectMapValue};
 pub use omap_lookup::lookup_object_map;
 pub use recovery::{find_entry_by_path, for_each_regular_file, for_each_regular_file_chunk, recover_regular_files, ApfsRecoveredFile, ApfsRecoveredFileHeader, ApfsRecoveredXattr};
+pub use symlink::{recover_symlinks, ApfsRecoveredSymlink};
 pub use volume_discovery::{container_volume_oids, discover_volumes, read_volume_superblock, ApfsDiscoveredVolume};
 pub use volume_omap::{lookup_volume_object, resolve_volume_root};
 pub use volume_recovery::recover_discovered_volume_files;
