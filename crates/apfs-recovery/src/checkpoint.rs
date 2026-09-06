@@ -31,6 +31,9 @@ pub(crate) fn read_latest_container_superblock_with_block<D: BlockDevice>(
         return Err(RecoveryError::IoFailure("short APFS container superblock read".into()));
     }
     let base = parse_container_superblock(&initial)?;
+    if u64::from(base.block_size) > range.length {
+        return Err(RecoveryError::IoFailure("APFS container block exceeds supplied range".into()));
+    }
 
     let desc_blocks_raw = u32_at(&initial, 0x68);
     if desc_blocks_raw & XP_DESC_FRAGMENTED != 0 {
