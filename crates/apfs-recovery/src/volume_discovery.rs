@@ -1,16 +1,13 @@
 use recovery_core::{ByteRange, RecoveryError, RecoveryResult};
 use storage_io::BlockDevice;
 
-use crate::{lookup_object_map, parse_container_superblock, parse_object_header, parse_object_map, parse_volume_superblock, read_object, ApfsContainer, ApfsObjectMapKey, ApfsVolume};
+use crate::{lookup_object_map, parse_container_superblock, parse_object_header, parse_object_map, parse_volume_superblock, read_latest_container_superblock_with_block, read_object, ApfsContainer, ApfsObjectMapKey, ApfsVolume};
 
 const NX_FS_OID_OFFSET: usize = 0xC8;
 const NX_MAX_FILE_SYSTEMS_OFFSET: usize = 0xC4;
 const NX_FS_OID_SLOTS: usize = 100;
 
 /// Extract the volume object identifiers recorded in an NX superblock.
-/// Zero entries are ignored and the advertised filesystem count is capped to
-/// the fixed NX array size. This function only decodes the superblock; it does
-/// not assume an OID is a physical block address.
 pub fn container_volume_oids(superblock: &[u8]) -> RecoveryResult<Vec<u64>> {
     parse_container_superblock(superblock)?;
     if superblock.len() < NX_FS_OID_OFFSET + NX_FS_OID_SLOTS * 8 {
@@ -48,8 +45,44 @@ pub fn read_volume_superblock<D: BlockDevice>(
         return Err(RecoveryError::OutOfRange { offset: mapping.physical_address, length: 1, capacity: container.block_count });
     }
     let block = read_object(device, range, container, mapping.physical_address)?;
-    parse_object_header(&block)?;
+    let header = parse_object_header(&block)?;
+    if header.oid != volume_oid {
+        return Err(RecoveryError::IoFailure("resolved APFS volume object has unexpected OID".into()));
+    }
     parse_volume_superblock(&block)
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ApfsDiscoveredVolume {
+    pub object_id: u64,
+    pub xid: u64,
+    pub volume: ApfsVolume,
+}
+
+/// Discover all live APFS volumes from the newest checkpoint superblock.
+/// The checkpoint's transaction ID is used for container OMAP version lookup,
+/// so callers no longer need to guess an XID. A stale/deleted volume mapping
+/// is skipped rather than aborting discovery of other volumes.
+pub fn discover_volumes<D: BlockDevice>(
+    device: &D,
+    range: ByteRange,
+) -> RecoveryResult<(ApfsContainer, Vec<ApfsDiscoveredVolume>)> {
+    let (container, superblock) = read_latest_container_superblock_with_block(device, range)?;
+    let header = parse_object_header(&superblock)?;
+    if header.oid == 0 || header.xid == 0 {
+        return Err(RecoveryError::IoFailure("selected APFS container superblock has invalid object identity".into()));
+    }
+    let volume_oids = container_volume_oids(&superblock)?;
+    let mut volumes = Vec::with_capacity(volume_oids.len());
+    for object_id in volume_oids {
+        match read_volume_superblock(device, range, &container, object_id, header.xid) {
+            Ok(volume) => volumes.push(ApfsDiscoveredVolume { object_id, xid: header.xid, volume }),
+            Err(RecoveryError::IoFailure(message)) if message.contains("mapping is deleted") => continue,
+            Err(RecoveryError::OutOfRange { .. }) => continue,
+            Err(error) => return Err(error),
+        }
+    }
+    Ok((container, volumes))
 }
 
 #[cfg(test)]
