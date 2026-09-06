@@ -90,12 +90,13 @@ pub fn list_snapshots<D: BlockDevice>(device: &D, range: ByteRange, container: &
     index_snapshot_records(&records)
 }
 
-pub fn mount_snapshot<D: BlockDevice>(device: &D, range: ByteRange, container: &ApfsContainer, live_volume: &ApfsVolume, snapshot: &ApfsSnapshot) -> RecoveryResult<ApfsVolume> {
+pub fn mount_snapshot<D: BlockDevice>(device: &D, range: ByteRange, container: &ApfsContainer, _live_volume: &ApfsVolume, snapshot: &ApfsSnapshot) -> RecoveryResult<ApfsVolume> {
     if snapshot.sblock_oid >= container.block_count { return Err(RecoveryError::OutOfRange { offset: snapshot.sblock_oid, length: 1, capacity: container.block_count }); }
     let block = read_object(device, range, container, snapshot.sblock_oid)?;
-    let mut frozen = crate::parse_volume_superblock(&block)?;
-    frozen.omap_oid = live_volume.omap_oid;
-    Ok(frozen)
+    // The snapshot superblock carries the object-map OID for the snapshot's
+    // filesystem state. Do not replace it with the live volume's OMAP: doing so
+    // silently mixes snapshot metadata with current filesystem objects.
+    crate::parse_volume_superblock(&block)
 }
 
 #[cfg(test)]
