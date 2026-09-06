@@ -4,8 +4,10 @@ use recovery_core::{RecoveryError, RecoveryResult};
 
 use crate::{decode_jkey, ApfsCatalogRecord, APFS_TYPE_XATTR};
 
-pub const XATTR_DATA_EMBEDDED: u16 = 0x0000;
 pub const XATTR_DATA_STREAM: u16 = 0x0001;
+pub const XATTR_DATA_EMBEDDED: u16 = 0x0002;
+pub const XATTR_FILE_SYSTEM_OWNED: u16 = 0x0004;
+pub const XATTR_PRIVATE_DSTREAM: u16 = 0x0010;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ApfsXattr {
@@ -13,15 +15,20 @@ pub struct ApfsXattr {
     pub name: String,
     pub flags: u16,
     pub data: Vec<u8>,
+    pub stream_id: Option<u64>,
+    pub stream_size: Option<u64>,
 }
 
 fn u16_at(data: &[u8], offset: usize) -> u16 {
     u16::from_le_bytes(data[offset..offset + 2].try_into().expect("validated APFS field"))
 }
 
-/// Decode an APFS XATTR key: j_key + u16 name length + NUL-terminated name.
+fn u64_at(data: &[u8], offset: usize) -> u64 {
+    u64::from_le_bytes(data[offset..offset + 8].try_into().expect("validated APFS field"))
+}
+
 pub fn decode_xattr_key(data: &[u8]) -> RecoveryResult<(u64, String)> {
-    if data.len() < 11 {
+    if data.len() < 10 {
         return Err(RecoveryError::LengthTooLarge { length: data.len() as u64 });
     }
     let key = decode_jkey(data)?;
@@ -43,10 +50,7 @@ pub fn decode_xattr_key(data: &[u8]) -> RecoveryResult<(u64, String)> {
     Ok((key.object_id, name))
 }
 
-/// Decode an APFS XATTR value: flags, data length, then inline data.
-/// Stream-backed xattrs are deliberately rejected here because their payload
-/// requires a DSTREAM/FILE_EXTENT lookup rather than treating metadata as data.
-pub fn decode_xattr_value(data: &[u8]) -> RecoveryResult<(u16, Vec<u8>)> {
+pub fn decode_xattr_value(data: &[u8]) -> RecoveryResult<(u16, Vec<u8>, Option<u64>, Option<u64>)> {
     if data.len() < 4 {
         return Err(RecoveryError::LengthTooLarge { length: data.len() as u64 });
     }
@@ -56,17 +60,23 @@ pub fn decode_xattr_value(data: &[u8]) -> RecoveryResult<(u16, Vec<u8>)> {
     if end > data.len() {
         return Err(RecoveryError::OutOfRange { offset: 4, length: data_len as u64, capacity: data.len() as u64 });
     }
-    if flags & XATTR_DATA_STREAM != 0 {
-        return Err(RecoveryError::IoFailure("APFS stream-backed xattr requires its data stream".into()));
+    let has_stream = flags & XATTR_DATA_STREAM != 0;
+    let has_embedded = flags & XATTR_DATA_EMBEDDED != 0;
+    if has_stream == has_embedded {
+        return Err(RecoveryError::IoFailure("APFS xattr must select exactly one data location".into()));
     }
-    if flags & !XATTR_DATA_STREAM != XATTR_DATA_EMBEDDED {
-        return Err(RecoveryError::IoFailure("unsupported APFS xattr flags".into()));
+    let payload = &data[4..end];
+    if has_embedded {
+        return Ok((flags, payload.to_vec(), None, None));
     }
-    Ok((flags, data[4..end].to_vec()))
+    if payload.len() < 16 {
+        return Err(RecoveryError::LengthTooLarge { length: payload.len() as u64 });
+    }
+    let stream_id = u64_at(payload, 0);
+    let stream_size = u64_at(payload, 8);
+    Ok((flags, Vec::new(), Some(stream_id), Some(stream_size)))
 }
 
-/// Index embedded APFS xattrs by inode object ID. Malformed records fail the
-/// whole index instead of silently attaching bytes to the wrong inode.
 pub fn index_xattrs(records: &[ApfsCatalogRecord]) -> RecoveryResult<BTreeMap<u64, Vec<ApfsXattr>>> {
     let mut result: BTreeMap<u64, Vec<ApfsXattr>> = BTreeMap::new();
     for record in records {
@@ -75,8 +85,10 @@ pub fn index_xattrs(records: &[ApfsCatalogRecord]) -> RecoveryResult<BTreeMap<u6
             continue;
         }
         let (inode_id, name) = decode_xattr_key(&record.key)?;
-        let (flags, data) = decode_xattr_value(&record.value)?;
-        result.entry(inode_id).or_default().push(ApfsXattr { inode_id, name, flags, data });
+        let (flags, data, stream_id, stream_size) = decode_xattr_value(&record.value)?;
+        result.entry(inode_id).or_default().push(ApfsXattr {
+            inode_id, name, flags, data, stream_id, stream_size,
+        });
     }
     for values in result.values_mut() {
         values.sort_by(|a, b| a.name.cmp(&b.name));
@@ -93,19 +105,38 @@ mod tests {
     #[test]
     fn decodes_embedded_xattr() {
         let mut key = jkey(4, 42).to_vec();
-        key.extend_from_slice(&6u16.to_le_bytes());
+        key.extend_from_slice(&7u16.to_le_bytes());
         key.extend_from_slice(b"author\0");
         let value = [XATTR_DATA_EMBEDDED as u8, 0, 5, 0, b'a', b'l', b'i', b'c', b'e'];
         let record = ApfsCatalogRecord { key, value: value.to_vec() };
         let indexed = index_xattrs(&[record]).unwrap();
         assert_eq!(indexed[&42][0].name, "author");
         assert_eq!(indexed[&42][0].data, b"alice");
+        assert_eq!(indexed[&42][0].flags, XATTR_DATA_EMBEDDED);
     }
 
     #[test]
-    fn rejects_stream_xattr_for_inline_decoder() {
-        let value = [XATTR_DATA_STREAM as u8, 0, 0, 0];
-        assert!(decode_xattr_value(&value).is_err());
+    fn decodes_stream_xattr_metadata() {
+        let mut key = jkey(4, 42).to_vec();
+        key.extend_from_slice(&5u16.to_le_bytes());
+        key.extend_from_slice(b"fork\0");
+        let mut value = vec![0u8; 52];
+        value[0..2].copy_from_slice(&XATTR_DATA_STREAM.to_le_bytes());
+        value[2..4].copy_from_slice(&48u16.to_le_bytes());
+        value[4..12].copy_from_slice(&77u64.to_le_bytes());
+        value[12..20].copy_from_slice(&1234u64.to_le_bytes());
+        let record = ApfsCatalogRecord { key, value };
+        let indexed = index_xattrs(&[record]).unwrap();
+        let xattr = &indexed[&42][0];
+        assert_eq!(xattr.stream_id, Some(77));
+        assert_eq!(xattr.stream_size, Some(1234));
+        assert!(xattr.data.is_empty());
+    }
+
+    #[test]
+    fn rejects_xattr_with_both_or_neither_storage_flags() {
+        assert!(decode_xattr_value(&[0x03, 0, 0, 0]).is_err());
+        assert!(decode_xattr_value(&[0, 0, 0, 0]).is_err());
     }
 
     #[test]
