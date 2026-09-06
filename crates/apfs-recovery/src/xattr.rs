@@ -1,13 +1,15 @@
 use std::collections::BTreeMap;
 
-use recovery_core::{RecoveryError, RecoveryResult};
+use recovery_core::{ByteRange, RecoveryError, RecoveryResult};
+use storage_io::BlockDevice;
 
-use crate::{decode_jkey, ApfsCatalogRecord, APFS_TYPE_XATTR};
+use crate::{decode_jkey, read_file_extents, ApfsCatalogRecord, ApfsFileExtent, APFS_TYPE_XATTR};
 
 pub const XATTR_DATA_STREAM: u16 = 0x0001;
 pub const XATTR_DATA_EMBEDDED: u16 = 0x0002;
 pub const XATTR_FILE_SYSTEM_OWNED: u16 = 0x0004;
 pub const XATTR_PRIVATE_DSTREAM: u16 = 0x0010;
+const XATTR_DSTREAM_SIZE: usize = 48;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ApfsXattr {
@@ -69,7 +71,7 @@ pub fn decode_xattr_value(data: &[u8]) -> RecoveryResult<(u16, Vec<u8>, Option<u
     if has_embedded {
         return Ok((flags, payload.to_vec(), None, None));
     }
-    if payload.len() < 16 {
+    if payload.len() != XATTR_DSTREAM_SIZE {
         return Err(RecoveryError::LengthTooLarge { length: payload.len() as u64 });
     }
     let stream_id = u64_at(payload, 0);
@@ -96,9 +98,40 @@ pub fn index_xattrs(records: &[ApfsCatalogRecord]) -> RecoveryResult<BTreeMap<u6
     Ok(result)
 }
 
+/// Reconstruct a stream-backed xattr from its FILE_EXTENT records.
+pub fn read_xattr_data<D: BlockDevice>(
+    device: &D,
+    container_range: ByteRange,
+    block_size: u32,
+    xattr: &ApfsXattr,
+    extents: &BTreeMap<u64, Vec<ApfsFileExtent>>,
+) -> RecoveryResult<Vec<u8>> {
+    if let Some(data) = Some(&xattr.data) {
+        if xattr.stream_id.is_none() {
+            return Ok(data.clone());
+        }
+    }
+    let stream_id = xattr.stream_id.ok_or_else(|| RecoveryError::IoFailure("APFS xattr has no data stream".into()))?;
+    let stream_size = xattr.stream_size.ok_or_else(|| RecoveryError::IoFailure("APFS xattr stream has no logical size".into()))?;
+    let stream_extents = extents.get(&stream_id).map(Vec::as_slice).unwrap_or(&[]);
+    read_file_extents(device, container_range, block_size, stream_extents, stream_size)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Arc, Mutex};
+
+    struct MemoryDevice { data: Arc<Mutex<Vec<u8>>> }
+    impl BlockDevice for MemoryDevice {
+        fn capacity(&self) -> u64 { self.data.lock().unwrap().len() as u64 }
+        fn read(&self, range: ByteRange, output: &mut [u8]) -> RecoveryResult<usize> {
+            range.validate_within(self.capacity())?;
+            let len = usize::try_from(range.length).map_err(|_| RecoveryError::LengthTooLarge { length: range.length })?;
+            output[..len].copy_from_slice(&self.data.lock().unwrap()[range.offset as usize..range.offset as usize + len]);
+            Ok(len)
+        }
+    }
 
     fn jkey(ty: u64, oid: u64) -> [u8; 8] { ((ty << 60) | oid).to_le_bytes() }
 
@@ -131,6 +164,22 @@ mod tests {
         assert_eq!(xattr.stream_id, Some(77));
         assert_eq!(xattr.stream_size, Some(1234));
         assert!(xattr.data.is_empty());
+    }
+
+    #[test]
+    fn reconstructs_stream_xattr() {
+        let image = MemoryDevice { data: Arc::new(Mutex::new(vec![0, 0, 0, 0, b'A', b'B', b'C', b'D'])) };
+        let xattr = ApfsXattr { inode_id: 42, name: "fork".into(), flags: XATTR_DATA_STREAM, data: Vec::new(), stream_id: Some(77), stream_size: Some(4) };
+        let extents = BTreeMap::from([(77, vec![ApfsFileExtent { logical_offset: 0, length: 4, physical_block: 1, crypto_id: 0, sparse: false }])]);
+        assert_eq!(read_xattr_data(&image, ByteRange::new(0, 8).unwrap(), 4, &xattr, &extents).unwrap(), b"ABCD");
+    }
+
+    #[test]
+    fn rejects_stream_xattr_with_wrong_dstream_size() {
+        let mut value = vec![0u8; 20];
+        value[0..2].copy_from_slice(&XATTR_DATA_STREAM.to_le_bytes());
+        value[2..4].copy_from_slice(&16u16.to_le_bytes());
+        assert!(decode_xattr_value(&value).is_err());
     }
 
     #[test]
