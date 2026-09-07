@@ -11,8 +11,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
-      # Normalize formatting in the ephemeral CI workspace so legacy formatting
-      # drift does not prevent compilation, linting, and tests from running.
-      - run: cargo fmt --all
+      - run: cargo fmt --all -- --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace --all-targets
+      - run: cargo build --workspace --release
