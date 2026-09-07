@@ -79,15 +79,19 @@ pub fn parse_object_map(data: &[u8]) -> RecoveryResult<ApfsObjectMap> {
             "APFS object map has invalid tree type".into(),
         ));
     }
-    if snapshot_tree_type & OMAP_TREE_TYPE_MASK != OBJECT_TYPE_BTREE {
-        return Err(RecoveryError::IoFailure(
-            "APFS object map has invalid snapshot tree type".into(),
-        ));
-    }
     let tree_oid = u64_at(data, 48);
     if tree_oid == 0 {
         return Err(RecoveryError::IoFailure(
             "APFS object map has no tree root".into(),
+        ));
+    }
+    // An object map with no snapshots carries no snapshot tree, and its type
+    // field is then meaningless. Validating it unconditionally rejects valid
+    // volume object maps.
+    let snapshot_tree_oid = u64_at(data, 56);
+    if snapshot_tree_oid != 0 && snapshot_tree_type & OMAP_TREE_TYPE_MASK != OBJECT_TYPE_BTREE {
+        return Err(RecoveryError::IoFailure(
+            "APFS object map has invalid snapshot tree type".into(),
         ));
     }
     Ok(ApfsObjectMap {
@@ -96,7 +100,7 @@ pub fn parse_object_map(data: &[u8]) -> RecoveryResult<ApfsObjectMap> {
         tree_type,
         snapshot_tree_type,
         tree_oid,
-        snapshot_tree_oid: u64_at(data, 56),
+        snapshot_tree_oid,
         most_recent_snapshot: u64_at(data, 64),
         pending_revert_min: u64_at(data, 72),
         pending_revert_max: u64_at(data, 80),
@@ -170,6 +174,31 @@ mod tests {
         assert!(parsed.is_deleted());
         assert_eq!(parsed.size, 4096);
         assert_eq!(parsed.physical_address, 99);
+    }
+
+    #[test]
+    fn accepts_an_object_map_with_no_snapshot_tree() {
+        // A volume that has never been snapshotted has snapshot_tree_oid == 0,
+        // and its snapshot tree type field is then meaningless. Rejecting it
+        // would make such volumes unreadable.
+        let mut data = vec![0u8; OMAP_HEADER_LEN];
+        data[40..44].copy_from_slice(&OBJECT_TYPE_BTREE.to_le_bytes());
+        data[44..48].copy_from_slice(&0u32.to_le_bytes()); // no snapshot tree type
+        data[48..56].copy_from_slice(&9u64.to_le_bytes()); // tree root
+        data[56..64].copy_from_slice(&0u64.to_le_bytes()); // no snapshot tree
+        let omap = parse_object_map(&data).expect("an unsnapshotted volume map is valid");
+        assert_eq!(omap.tree_oid, 9);
+        assert_eq!(omap.snapshot_tree_oid, 0);
+    }
+
+    #[test]
+    fn rejects_a_bad_snapshot_tree_type_when_a_snapshot_tree_exists() {
+        let mut data = vec![0u8; OMAP_HEADER_LEN];
+        data[40..44].copy_from_slice(&OBJECT_TYPE_BTREE.to_le_bytes());
+        data[44..48].copy_from_slice(&0u32.to_le_bytes()); // invalid type
+        data[48..56].copy_from_slice(&9u64.to_le_bytes());
+        data[56..64].copy_from_slice(&11u64.to_le_bytes()); // a snapshot tree IS present
+        assert!(parse_object_map(&data).is_err());
     }
 
     #[test]
