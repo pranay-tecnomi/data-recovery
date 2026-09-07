@@ -339,65 +339,7 @@ pub fn read_directory<D: BlockDevice>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::testimage::{Mem, ROOT_CLUSTER, image};
-
-    /// Builds a valid File/Stream/Name entry set with a correct checksum.
-    fn entry_set(
-        name: &str,
-        cluster: u32,
-        size: u64,
-        attributes: u16,
-        deleted: bool,
-    ) -> Vec<[u8; ENTRY_SIZE]> {
-        let units: Vec<u16> = name.encode_utf16().collect();
-        let name_entries = units.len().div_ceil(NAME_CHARS_PER_ENTRY).max(1);
-        let secondary = 1 + name_entries;
-
-        let mut file = [0u8; ENTRY_SIZE];
-        file[0] = if deleted {
-            TYPE_FILE & !IN_USE_MASK
-        } else {
-            TYPE_FILE
-        };
-        file[1] = secondary as u8;
-        file[4..6].copy_from_slice(&attributes.to_le_bytes());
-
-        let mut stream = [0u8; ENTRY_SIZE];
-        stream[0] = if deleted {
-            TYPE_STREAM & !IN_USE_MASK
-        } else {
-            TYPE_STREAM
-        };
-        stream[3] = units.len() as u8;
-        stream[8..16].copy_from_slice(&size.to_le_bytes());
-        stream[20..24].copy_from_slice(&cluster.to_le_bytes());
-        stream[24..32].copy_from_slice(&size.to_le_bytes());
-
-        let mut set = vec![file, stream];
-        for chunk in units.chunks(NAME_CHARS_PER_ENTRY) {
-            let mut e = [0u8; ENTRY_SIZE];
-            e[0] = if deleted {
-                TYPE_FILE_NAME & !IN_USE_MASK
-            } else {
-                TYPE_FILE_NAME
-            };
-            for (i, unit) in chunk.iter().enumerate() {
-                e[2 + i * 2..4 + i * 2].copy_from_slice(&unit.to_le_bytes());
-            }
-            set.push(e);
-        }
-
-        // Fill in the checksum now that the set is complete.
-        let sum = entry_set_checksum(&set);
-        set[0][2..4].copy_from_slice(&sum.to_le_bytes());
-        set
-    }
-
-    fn write_set(m: &mut Mem, slot: usize, set: &[[u8; ENTRY_SIZE]]) {
-        for (i, e) in set.iter().enumerate() {
-            m.put_entry(ROOT_CLUSTER, slot + i, e);
-        }
-    }
+    use crate::testimage::{Mem, ROOT_CLUSTER, entry_set, image};
 
     fn read_root(m: &Mem, include_deleted: bool) -> (Vec<DirectoryEntry>, Vec<EntrySetError>) {
         let v = crate::parse_volume(m, m.range()).unwrap();
@@ -417,7 +359,7 @@ mod tests {
     #[test]
     fn parses_a_valid_entry_set() {
         let mut m = image();
-        write_set(&mut m, 0, &entry_set("Report.pdf", 5, 1234, 0, false));
+        m.write_set(0, &entry_set("Report.pdf", 5, 1234, 0, false));
         let (entries, rejected) = read_root(&m, false);
         assert!(rejected.is_empty());
         assert_eq!(entries.len(), 1);
@@ -432,7 +374,7 @@ mod tests {
         let mut m = image();
         // 40 characters needs three name entries.
         let name = "A rather long exFAT file name here.txt";
-        write_set(&mut m, 0, &entry_set(name, 5, 10, 0, false));
+        m.write_set(0, &entry_set(name, 5, 10, 0, false));
         let (entries, _) = read_root(&m, false);
         assert_eq!(entries[0].name, name);
     }
@@ -440,7 +382,7 @@ mod tests {
     #[test]
     fn parses_non_ascii_names() {
         let mut m = image();
-        write_set(&mut m, 0, &entry_set("café-漢字.txt", 5, 10, 0, false));
+        m.write_set(0, &entry_set("café-漢字.txt", 5, 10, 0, false));
         let (entries, _) = read_root(&m, false);
         assert_eq!(entries[0].name, "café-漢字.txt");
     }
@@ -448,7 +390,7 @@ mod tests {
     #[test]
     fn identifies_directories() {
         let mut m = image();
-        write_set(&mut m, 0, &entry_set("Photos", 6, 0, ATTR_DIRECTORY, false));
+        m.write_set(0, &entry_set("Photos", 6, 0, ATTR_DIRECTORY, false));
         let (entries, _) = read_root(&m, false);
         assert!(entries[0].is_directory());
     }
@@ -459,7 +401,7 @@ mod tests {
         let mut set = entry_set("Report.pdf", 5, 10, 0, false);
         // Corrupt a byte the checksum covers.
         set[1][20] ^= 0xFF;
-        write_set(&mut m, 0, &set);
+        m.write_set(0, &set);
         let (entries, rejected) = read_root(&m, false);
         // An invalid set is evidence, not a valid file.
         assert!(entries.is_empty());
@@ -476,7 +418,7 @@ mod tests {
         set[1][0] = TYPE_FILE_NAME;
         let sum = entry_set_checksum(&set);
         set[0][2..4].copy_from_slice(&sum.to_le_bytes());
-        write_set(&mut m, 0, &set);
+        m.write_set(0, &set);
         let (entries, rejected) = read_root(&m, false);
         assert!(entries.is_empty());
         assert_eq!(rejected[0], EntrySetError::MissingStream);
@@ -488,7 +430,7 @@ mod tests {
             let mut m = image();
             let mut set = entry_set("A.txt", 5, 10, 0, false);
             set[0][1] = count;
-            write_set(&mut m, 0, &set);
+            m.write_set(0, &set);
             let (entries, rejected) = read_root(&m, false);
             assert!(entries.is_empty(), "count {count} must not parse");
             assert!(!rejected.is_empty());
@@ -503,7 +445,7 @@ mod tests {
         set[1][3] = 200;
         let sum = entry_set_checksum(&set);
         set[0][2..4].copy_from_slice(&sum.to_le_bytes());
-        write_set(&mut m, 0, &set);
+        m.write_set(0, &set);
         let (entries, rejected) = read_root(&m, false);
         assert!(entries.is_empty());
         assert!(matches!(
@@ -516,7 +458,7 @@ mod tests {
     fn rejects_a_name_containing_a_path_separator() {
         let mut m = image();
         // A separator would let a recovered file escape its directory.
-        write_set(&mut m, 0, &entry_set("../escape.txt", 5, 10, 0, false));
+        m.write_set(0, &entry_set("../escape.txt", 5, 10, 0, false));
         let (entries, rejected) = read_root(&m, false);
         assert!(entries.is_empty());
         assert_eq!(rejected[0], EntrySetError::InvalidName);
@@ -525,7 +467,7 @@ mod tests {
     #[test]
     fn deleted_sets_are_excluded_unless_requested() {
         let mut m = image();
-        write_set(&mut m, 0, &entry_set("Deleted.txt", 5, 10, 0, true));
+        m.write_set(0, &entry_set("Deleted.txt", 5, 10, 0, true));
         assert!(read_root(&m, false).0.is_empty());
         let (entries, _) = read_root(&m, true);
         assert_eq!(entries.len(), 1);
@@ -538,8 +480,8 @@ mod tests {
         let mut m = image();
         let mut bad = entry_set("Bad.txt", 5, 10, 0, false);
         bad[1][20] ^= 0xFF;
-        write_set(&mut m, 0, &bad);
-        write_set(&mut m, bad.len(), &entry_set("Good.txt", 6, 20, 0, false));
+        m.write_set(0, &bad);
+        m.write_set(bad.len(), &entry_set("Good.txt", 6, 20, 0, false));
         let (entries, rejected) = read_root(&m, false);
         // The valid set after the malformed one is still found.
         assert_eq!(entries.len(), 1);
@@ -550,9 +492,9 @@ mod tests {
     #[test]
     fn stops_at_end_of_directory() {
         let mut m = image();
-        write_set(&mut m, 0, &entry_set("First.txt", 5, 10, 0, false));
+        m.write_set(0, &entry_set("First.txt", 5, 10, 0, false));
         // Slot 4 is left zero, marking the end; anything after is not read.
-        write_set(&mut m, 8, &entry_set("After.txt", 6, 10, 0, false));
+        m.write_set(8, &entry_set("After.txt", 6, 10, 0, false));
         let (entries, _) = read_root(&m, false);
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].name, "First.txt");
@@ -565,7 +507,7 @@ mod tests {
         set[1][1] |= 0x02;
         let sum = entry_set_checksum(&set);
         set[0][2..4].copy_from_slice(&sum.to_le_bytes());
-        write_set(&mut m, 0, &set);
+        m.write_set(0, &set);
         let (entries, _) = read_root(&m, false);
         assert!(entries[0].no_fat_chain);
     }

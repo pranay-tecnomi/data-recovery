@@ -18,5 +18,9 @@ pub use extents::{
     Confidence, DeletedCandidate, ExtentState, StreamExtents, deleted_candidate, stream_extents,
 };
 
-#[cfg(test)]
-pub(crate) mod testimage;
+/// Deterministic in-memory exFAT images for tests.
+///
+/// Behind the `test-support` feature so the workspace's end-to-end tests can
+/// build real volumes, without shipping fixture code in release builds.
+#[cfg(any(test, feature = "test-support"))]
+pub mod testimage;

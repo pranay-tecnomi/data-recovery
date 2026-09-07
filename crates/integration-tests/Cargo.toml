@@ -15,7 +15,7 @@ storage-io = { path = "../storage-io" }
 partition-discovery = { path = "../partition-discovery" }
 filesystem-probe = { path = "../filesystem-probe" }
 fat32-recovery = { path = "../fat32-recovery" }
-exfat-recovery = { path = "../exfat-recovery" }
+exfat-recovery = { path = "../exfat-recovery", features = ["test-support"] }
 apfs-recovery = { path = "../apfs-recovery" }
 candidate-pipeline = { path = "../candidate-pipeline" }
 recovery-engine = { path = "../recovery-engine" }

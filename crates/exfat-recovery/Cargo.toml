@@ -8,6 +8,10 @@ repository.workspace = true
 [lints]
 workspace = true
 
+[features]
+# Exposes the in-memory image builders to other crates' tests.
+test-support = []
+
 [dependencies]
 recovery-core = { path = "../recovery-core" }
 storage-io = { path = "../storage-io" }
