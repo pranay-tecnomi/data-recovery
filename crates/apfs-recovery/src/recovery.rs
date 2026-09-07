@@ -73,6 +73,8 @@ fn regular_file_metadata<D: BlockDevice>(
 /// The callback receives the file metadata and one `(logical_offset, chunk)`
 /// at a time. Chunks include holes as zero-filled data and are emitted in
 /// logical order. At most `chunk_size` file bytes are materialized at once.
+/// Zero-length regular files are emitted once with an empty chunk so callers
+/// can still create the recovered file and its metadata.
 pub fn for_each_regular_file_chunk<D, F>(
     index: &ApfsFilesystemIndex,
     device: &D,
@@ -93,6 +95,10 @@ where
         let Some(header) = regular_file_metadata(index, entry, device, container_range, block_size)? else {
             continue;
         };
+        if header.size == 0 {
+            visit(&header, 0, &[])?;
+            continue;
+        }
         let inode = index.inodes.get(&entry.file_id).expect("validated regular-file metadata");
         let extents = index.extents.get(&inode.private_id).map(Vec::as_slice).unwrap_or(&[]);
         let mut next_logical = 0u64;
