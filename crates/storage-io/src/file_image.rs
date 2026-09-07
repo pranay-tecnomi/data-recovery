@@ -42,8 +42,9 @@ impl BlockDevice for FileImageDevice {
 
     fn read(&self, range: ByteRange, output: &mut [u8]) -> RecoveryResult<usize> {
         range.validate_within(self.capacity)?;
-        let length = usize::try_from(range.length)
-            .map_err(|_| RecoveryError::LengthTooLarge { length: range.length })?;
+        let length = usize::try_from(range.length).map_err(|_| RecoveryError::LengthTooLarge {
+            length: range.length,
+        })?;
         if output.len() < length {
             return Err(RecoveryError::OutputBufferTooSmall {
                 required: length,
@@ -92,10 +93,7 @@ mod tests {
         let path = fixture();
         let d = FileImageDevice::open(&path).unwrap();
         let mut out = [0; 3];
-        assert_eq!(
-            d.read(ByteRange::new(2, 3).unwrap(), &mut out).unwrap(),
-            3
-        );
+        assert_eq!(d.read(ByteRange::new(2, 3).unwrap(), &mut out).unwrap(), 3);
         assert_eq!(&out, b"cde");
         std::fs::remove_file(path).unwrap();
     }
@@ -129,10 +127,7 @@ mod tests {
         let path = fixture();
         let d = FileImageDevice::open(&path).unwrap();
         let mut out = [];
-        assert_eq!(
-            d.read(ByteRange::new(8, 0).unwrap(), &mut out).unwrap(),
-            0
-        );
+        assert_eq!(d.read(ByteRange::new(8, 0).unwrap(), &mut out).unwrap(), 0);
         std::fs::remove_file(path).unwrap();
     }
 }

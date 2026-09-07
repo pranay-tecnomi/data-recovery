@@ -7,9 +7,8 @@
 #![forbid(unsafe_code)]
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-mod engine;
-
-use engine::{RecoveryResultView, ScanResult};
+use recovery_engine as engine;
+use recovery_engine::{RecoveryResultView, ScanResult};
 
 /// Scans an image file and returns everything the results screen needs.
 #[tauri::command]

@@ -50,10 +50,12 @@ pub fn align_read(
     // Never read past the device, even when rounding up would.
     let aligned_end = aligned_end.min(capacity);
 
-    let inner_offset = usize::try_from(range.offset - start)
-        .map_err(|_| RecoveryError::RangeOverflow)?;
-    let inner_length = usize::try_from(range.length)
-        .map_err(|_| RecoveryError::LengthTooLarge { length: range.length })?;
+    let inner_offset =
+        usize::try_from(range.offset - start).map_err(|_| RecoveryError::RangeOverflow)?;
+    let inner_length =
+        usize::try_from(range.length).map_err(|_| RecoveryError::LengthTooLarge {
+            length: range.length,
+        })?;
 
     Ok(AlignedRead {
         aligned: ByteRange::new(start, aligned_end - start)?,

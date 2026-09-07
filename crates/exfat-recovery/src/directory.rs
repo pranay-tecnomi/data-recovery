@@ -10,7 +10,7 @@ use std::collections::BTreeSet;
 use recovery_core::{ByteRange, RecoveryError, RecoveryResult};
 use storage_io::BlockDevice;
 
-use crate::boot::{io_error, ExfatVolume};
+use crate::boot::{ExfatVolume, io_error};
 
 pub const ENTRY_SIZE: usize = 32;
 
@@ -97,7 +97,9 @@ pub(crate) fn next_cluster<D: BlockDevice>(
         return Err(io_error("FAT chain enters a bad cluster"));
     }
     if !volume.is_valid_cluster(value) {
-        return Err(io_error(format!("FAT link {value} outside the cluster heap")));
+        return Err(io_error(format!(
+            "FAT link {value} outside the cluster heap"
+        )));
     }
     Ok(Some(value))
 }
@@ -148,7 +150,10 @@ fn entry_set_checksum(entries: &[[u8; ENTRY_SIZE]]) -> u16 {
 /// Assembles the UTF-16 name carried by the File Name entries of a set.
 fn assemble_name(entries: &[[u8; ENTRY_SIZE]], declared_len: u8) -> Result<String, EntrySetError> {
     let mut units: Vec<u16> = Vec::new();
-    for entry in entries.iter().filter(|e| e[0] & !IN_USE_MASK == TYPE_FILE_NAME & !IN_USE_MASK) {
+    for entry in entries
+        .iter()
+        .filter(|e| e[0] & !IN_USE_MASK == TYPE_FILE_NAME & !IN_USE_MASK)
+    {
         for pair in entry[2..32].as_chunks::<2>().0 {
             units.push(u16::from_le_bytes(*pair));
         }
@@ -156,11 +161,17 @@ fn assemble_name(entries: &[[u8; ENTRY_SIZE]], declared_len: u8) -> Result<Strin
     let declared = usize::from(declared_len);
     // A name cannot exceed what the maximum number of name entries can carry.
     if declared > usize::from(MAX_NAME_ENTRIES) * NAME_CHARS_PER_ENTRY {
-        return Err(EntrySetError::NameLengthMismatch { declared: declared_len, found: units.len() });
+        return Err(EntrySetError::NameLengthMismatch {
+            declared: declared_len,
+            found: units.len(),
+        });
     }
     // The name entries must actually carry the declared character count.
     if declared > units.len() {
-        return Err(EntrySetError::NameLengthMismatch { declared: declared_len, found: units.len() });
+        return Err(EntrySetError::NameLengthMismatch {
+            declared: declared_len,
+            found: units.len(),
+        });
     }
     units.truncate(declared);
     // Reject unpaired surrogates rather than substituting replacement characters.
@@ -176,9 +187,7 @@ fn assemble_name(entries: &[[u8; ENTRY_SIZE]], declared_len: u8) -> Result<Strin
 ///
 /// Returns the parsed entry and the number of 32-byte slots consumed, or the
 /// reason the set was rejected alongside the slot count to skip.
-fn parse_entry_set(
-    entries: &[[u8; ENTRY_SIZE]],
-) -> (Result<DirectoryEntry, EntrySetError>, usize) {
+fn parse_entry_set(entries: &[[u8; ENTRY_SIZE]]) -> (Result<DirectoryEntry, EntrySetError>, usize) {
     let file = &entries[0];
     let deleted = file[0] & IN_USE_MASK == 0;
     let secondary_count = file[1];
@@ -189,7 +198,9 @@ fn parse_entry_set(
     // 17 name entries. Bounding this caps how far a corrupt count can skip.
     if secondary_count == 0 || secondary_count > MAX_NAME_ENTRIES + 1 {
         return (
-            Err(EntrySetError::SecondaryCountOutOfRange { declared: secondary_count }),
+            Err(EntrySetError::SecondaryCountOutOfRange {
+                declared: secondary_count,
+            }),
             1,
         );
     }
@@ -215,7 +226,10 @@ fn parse_entry_set(
     if computed != declared_checksum {
         // Retained as evidence; the set is not trusted.
         return (
-            Err(EntrySetError::ChecksumMismatch { declared: declared_checksum, computed }),
+            Err(EntrySetError::ChecksumMismatch {
+                declared: declared_checksum,
+                computed,
+            }),
             total,
         );
     }
@@ -325,23 +339,35 @@ pub fn read_directory<D: BlockDevice>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::testimage::{image, Mem, ROOT_CLUSTER};
+    use crate::testimage::{Mem, ROOT_CLUSTER, image};
 
     /// Builds a valid File/Stream/Name entry set with a correct checksum.
-    fn entry_set(name: &str, cluster: u32, size: u64, attributes: u16, deleted: bool)
-        -> Vec<[u8; ENTRY_SIZE]>
-    {
+    fn entry_set(
+        name: &str,
+        cluster: u32,
+        size: u64,
+        attributes: u16,
+        deleted: bool,
+    ) -> Vec<[u8; ENTRY_SIZE]> {
         let units: Vec<u16> = name.encode_utf16().collect();
         let name_entries = units.len().div_ceil(NAME_CHARS_PER_ENTRY).max(1);
         let secondary = 1 + name_entries;
 
         let mut file = [0u8; ENTRY_SIZE];
-        file[0] = if deleted { TYPE_FILE & !IN_USE_MASK } else { TYPE_FILE };
+        file[0] = if deleted {
+            TYPE_FILE & !IN_USE_MASK
+        } else {
+            TYPE_FILE
+        };
         file[1] = secondary as u8;
         file[4..6].copy_from_slice(&attributes.to_le_bytes());
 
         let mut stream = [0u8; ENTRY_SIZE];
-        stream[0] = if deleted { TYPE_STREAM & !IN_USE_MASK } else { TYPE_STREAM };
+        stream[0] = if deleted {
+            TYPE_STREAM & !IN_USE_MASK
+        } else {
+            TYPE_STREAM
+        };
         stream[3] = units.len() as u8;
         stream[8..16].copy_from_slice(&size.to_le_bytes());
         stream[20..24].copy_from_slice(&cluster.to_le_bytes());
@@ -350,7 +376,11 @@ mod tests {
         let mut set = vec![file, stream];
         for chunk in units.chunks(NAME_CHARS_PER_ENTRY) {
             let mut e = [0u8; ENTRY_SIZE];
-            e[0] = if deleted { TYPE_FILE_NAME & !IN_USE_MASK } else { TYPE_FILE_NAME };
+            e[0] = if deleted {
+                TYPE_FILE_NAME & !IN_USE_MASK
+            } else {
+                TYPE_FILE_NAME
+            };
             for (i, unit) in chunk.iter().enumerate() {
                 e[2 + i * 2..4 + i * 2].copy_from_slice(&unit.to_le_bytes());
             }
@@ -372,7 +402,15 @@ mod tests {
     fn read_root(m: &Mem, include_deleted: bool) -> (Vec<DirectoryEntry>, Vec<EntrySetError>) {
         let v = crate::parse_volume(m, m.range()).unwrap();
         let mut rejected = Vec::new();
-        let entries = read_directory(m, &v, m.range(), ROOT_CLUSTER, include_deleted, &mut rejected).unwrap();
+        let entries = read_directory(
+            m,
+            &v,
+            m.range(),
+            ROOT_CLUSTER,
+            include_deleted,
+            &mut rejected,
+        )
+        .unwrap();
         (entries, rejected)
     }
 
@@ -425,7 +463,10 @@ mod tests {
         let (entries, rejected) = read_root(&m, false);
         // An invalid set is evidence, not a valid file.
         assert!(entries.is_empty());
-        assert!(matches!(rejected[0], EntrySetError::ChecksumMismatch { .. }));
+        assert!(matches!(
+            rejected[0],
+            EntrySetError::ChecksumMismatch { .. }
+        ));
     }
 
     #[test]
@@ -465,7 +506,10 @@ mod tests {
         write_set(&mut m, 0, &set);
         let (entries, rejected) = read_root(&m, false);
         assert!(entries.is_empty());
-        assert!(matches!(rejected[0], EntrySetError::NameLengthMismatch { .. }));
+        assert!(matches!(
+            rejected[0],
+            EntrySetError::NameLengthMismatch { .. }
+        ));
     }
 
     #[test]

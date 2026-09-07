@@ -16,7 +16,9 @@ partition-discovery = { path = "../partition-discovery" }
 filesystem-probe = { path = "../filesystem-probe" }
 fat32-recovery = { path = "../fat32-recovery" }
 exfat-recovery = { path = "../exfat-recovery" }
+apfs-recovery = { path = "../apfs-recovery" }
 candidate-pipeline = { path = "../candidate-pipeline" }
+recovery-engine = { path = "../recovery-engine" }
 recovery-output = { path = "../recovery-output" }
 file-carving = { path = "../file-carving" }
 platform-device = { path = "../platform-device" }

@@ -5,7 +5,10 @@
 //! session can never be replayed against different media. Invalid checkpoints
 //! fail closed: a partially decoded state is never resumed from.
 
-use std::{fs, path::{Path, PathBuf}};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+};
 
 use recovery_core::{ByteRange, RecoveryError, RecoveryResult};
 
@@ -123,8 +126,12 @@ impl Checkpoint {
     /// Ranges still to scan, given the source capacity.
     pub fn remaining(&self, capacity: u64) -> Vec<ByteRange> {
         // Accounted ranges are those already done or known bad.
-        let mut accounted: Vec<ByteRange> =
-            self.completed.iter().chain(self.unreadable.iter()).copied().collect();
+        let mut accounted: Vec<ByteRange> = self
+            .completed
+            .iter()
+            .chain(self.unreadable.iter())
+            .copied()
+            .collect();
         Self::normalize(&mut accounted);
 
         let mut gaps = Vec::new();
@@ -197,9 +204,9 @@ impl Checkpoint {
             }
             raw.split(',')
                 .map(|part| {
-                    let (offset, length) = part.split_once(':').ok_or_else(|| {
-                        ResumeRejection::Corrupt("malformed range entry".into())
-                    })?;
+                    let (offset, length) = part
+                        .split_once(':')
+                        .ok_or_else(|| ResumeRejection::Corrupt("malformed range entry".into()))?;
                     let offset = offset.parse::<u64>().map_err(|_| {
                         ResumeRejection::Corrupt("range offset is not a number".into())
                     })?;
@@ -226,8 +233,15 @@ impl Checkpoint {
         };
 
         // Ranges must lie within the source the checkpoint describes.
-        for range in checkpoint.completed.iter().chain(checkpoint.unreadable.iter()) {
-            if range.validate_within(checkpoint.fingerprint.capacity).is_err() {
+        for range in checkpoint
+            .completed
+            .iter()
+            .chain(checkpoint.unreadable.iter())
+        {
+            if range
+                .validate_within(checkpoint.fingerprint.capacity)
+                .is_err()
+            {
                 return Err(ResumeRejection::Corrupt(
                     "a recorded range lies outside the source capacity".into(),
                 ));
@@ -257,10 +271,11 @@ impl Checkpoint {
             .len();
         // A corrupted length must not drive an unbounded read.
         if size > MAX_CHECKPOINT_BYTES {
-            return Err(ResumeRejection::Corrupt("checkpoint is implausibly large".into()));
+            return Err(ResumeRejection::Corrupt(
+                "checkpoint is implausibly large".into(),
+            ));
         }
-        let text = fs::read_to_string(path)
-            .map_err(|e| ResumeRejection::Corrupt(e.to_string()))?;
+        let text = fs::read_to_string(path).map_err(|e| ResumeRejection::Corrupt(e.to_string()))?;
         let checkpoint = Self::decode(&text)?;
         // Resuming against different media would produce nonsense results.
         if !checkpoint.fingerprint.matches(current) {
@@ -283,14 +298,20 @@ mod tests {
     static ID: AtomicU64 = AtomicU64::new(0);
 
     fn fingerprint() -> SourceFingerprint {
-        SourceFingerprint { capacity: 1 << 20, logical_sector_size: 512, content_digest: 0xABCD }
+        SourceFingerprint {
+            capacity: 1 << 20,
+            logical_sector_size: 512,
+            content_digest: 0xABCD,
+        }
     }
 
     fn workspace(name: &str) -> PathBuf {
         let id = ID.fetch_add(1, Ordering::Relaxed);
         let path = std::env::temp_dir().join(format!(
             "data-recovery-session-{}-{}-{}",
-            std::process::id(), id, name
+            std::process::id(),
+            id,
+            name
         ));
         let _ = fs::remove_dir_all(&path);
         fs::create_dir_all(&path).unwrap();
@@ -396,14 +417,20 @@ mod tests {
         Checkpoint::new("s1", fingerprint()).save(&path).unwrap();
 
         // Same geometry, different content: not the same media.
-        let other = SourceFingerprint { content_digest: 0x9999, ..fingerprint() };
+        let other = SourceFingerprint {
+            content_digest: 0x9999,
+            ..fingerprint()
+        };
         assert_eq!(
             Checkpoint::load(&path, &other),
             Err(ResumeRejection::SourceMismatch)
         );
 
         // Different capacity is also a mismatch.
-        let resized = SourceFingerprint { capacity: 999, ..fingerprint() };
+        let resized = SourceFingerprint {
+            capacity: 999,
+            ..fingerprint()
+        };
         assert_eq!(
             Checkpoint::load(&path, &resized),
             Err(ResumeRejection::SourceMismatch)
@@ -413,10 +440,15 @@ mod tests {
 
     #[test]
     fn refuses_an_incompatible_schema() {
-        let text = Checkpoint::new("s1", fingerprint()).encode().replace("schema=1", "schema=99");
+        let text = Checkpoint::new("s1", fingerprint())
+            .encode()
+            .replace("schema=1", "schema=99");
         assert_eq!(
             Checkpoint::decode(&text),
-            Err(ResumeRejection::SchemaMismatch { found: 99, expected: SCHEMA_VERSION })
+            Err(ResumeRejection::SchemaMismatch {
+                found: 99,
+                expected: SCHEMA_VERSION
+            })
         );
     }
 
@@ -434,7 +466,12 @@ mod tests {
     #[test]
     fn rejects_malformed_range_entries() {
         let base = Checkpoint::new("s1", fingerprint()).encode();
-        for bad in ["completed=abc", "completed=1:", "completed=1:2:3", "completed=:5"] {
+        for bad in [
+            "completed=abc",
+            "completed=1:",
+            "completed=1:2:3",
+            "completed=:5",
+        ] {
             let text = base.replace("completed=", &format!("{bad}\nignored="));
             assert!(Checkpoint::decode(&text).is_err(), "{bad} must not decode");
         }
@@ -493,6 +530,9 @@ mod tests {
     #[test]
     fn fingerprints_compare_structurally() {
         assert!(fingerprint().matches(&fingerprint()));
-        assert!(!fingerprint().matches(&SourceFingerprint { capacity: 1, ..fingerprint() }));
+        assert!(!fingerprint().matches(&SourceFingerprint {
+            capacity: 1,
+            ..fingerprint()
+        }));
     }
 }

@@ -66,7 +66,10 @@ fn normalize(path: &Path) -> PathBuf {
     // Owned components, so the prefix can be truncated while walking up.
     let mut tail: Vec<std::ffi::OsString> = Vec::new();
     while !prefix.exists() {
-        let Some(component) = prefix.components().next_back().map(|c| c.as_os_str().to_owned())
+        let Some(component) = prefix
+            .components()
+            .next_back()
+            .map(|c| c.as_os_str().to_owned())
         else {
             break;
         };
@@ -124,7 +127,9 @@ pub fn validate_destination(
         return Err(DestinationRejection::NotADirectory);
     }
 
-    Ok(SafeDestination { root: destination_norm })
+    Ok(SafeDestination {
+        root: destination_norm,
+    })
 }
 
 #[cfg(test)]

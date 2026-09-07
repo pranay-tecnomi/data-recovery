@@ -182,7 +182,9 @@ impl ExfatVolume {
     /// Byte offset of `cluster` within the source, given the volume's start.
     pub fn cluster_offset(&self, volume_start: u64, cluster: u32) -> RecoveryResult<u64> {
         if !self.is_valid_cluster(cluster) {
-            return Err(io_error(format!("cluster {cluster} outside the exFAT heap")));
+            return Err(io_error(format!(
+                "cluster {cluster} outside the exFAT heap"
+            )));
         }
         let index = u64::from(cluster - FIRST_CLUSTER);
         let sector = self
@@ -205,7 +207,9 @@ impl ExfatVolume {
     /// Byte offset of `cluster`'s entry in the first FAT.
     pub(crate) fn fat_entry_offset(&self, volume_start: u64, cluster: u32) -> RecoveryResult<u64> {
         if !self.is_valid_cluster(cluster) {
-            return Err(io_error(format!("cluster {cluster} outside the exFAT heap")));
+            return Err(io_error(format!(
+                "cluster {cluster} outside the exFAT heap"
+            )));
         }
         let base = self
             .fat_offset_sectors
@@ -232,7 +236,7 @@ impl ExfatVolume {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::testimage::{image, CLUSTER_COUNT, HEAP_SECTOR, TOTAL_SECTORS};
+    use crate::testimage::{CLUSTER_COUNT, HEAP_SECTOR, TOTAL_SECTORS, image};
 
     fn parsed(m: &crate::testimage::Mem) -> RecoveryResult<ExfatVolume> {
         parse_volume(m, m.range())
@@ -253,7 +257,10 @@ mod tests {
         let v = parsed(&image()).unwrap();
         // Cluster 2 is the first cluster of the heap.
         assert_eq!(v.cluster_offset(0, 2).unwrap(), (HEAP_SECTOR * 512) as u64);
-        assert_eq!(v.cluster_offset(0, 3).unwrap(), (HEAP_SECTOR * 512 + 512) as u64);
+        assert_eq!(
+            v.cluster_offset(0, 3).unwrap(),
+            (HEAP_SECTOR * 512 + 512) as u64
+        );
     }
 
     #[test]

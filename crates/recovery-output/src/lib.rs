@@ -10,11 +10,9 @@ pub mod manifest;
 pub mod session;
 pub mod writer;
 
-pub use destination::{validate_destination, DestinationRejection, SafeDestination};
+pub use destination::{DestinationRejection, SafeDestination, validate_destination};
 pub use manifest::{build_manifest, manifest_line};
 pub use session::{
-    checkpoint_path, Checkpoint, ResumeRejection, SourceFingerprint, SCHEMA_VERSION,
+    Checkpoint, ResumeRejection, SCHEMA_VERSION, SourceFingerprint, checkpoint_path,
 };
-pub use writer::{
-    recover_all, recover_candidate, CollisionPolicy, ItemOutcome, RecoveredItem,
-};
+pub use writer::{CollisionPolicy, ItemOutcome, RecoveredItem, recover_all, recover_candidate};

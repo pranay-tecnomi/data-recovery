@@ -1,20 +1,24 @@
 //! Wires the recovery crates into the operations the UI performs.
 //!
-//! This module owns no parsing logic of its own; it orchestrates the engine
+//! This crate owns no parsing logic of its own; it orchestrates the engine
 //! crates and converts their types into serialisable views for the front end.
+//! It is a library rather than a module inside the desktop binary so the
+//! end-to-end tests can drive the same scan and recovery path the app uses.
+
+#![forbid(unsafe_code)]
 
 use std::path::{Path, PathBuf};
 
 use candidate_pipeline::run as run_pipeline;
-use file_carving::{carve, CarveLimits, REGISTRY};
-use filesystem_probe::{probe, FilesystemKind};
-use partition_discovery::{discover_gpt, discover_mbr, DiskGeometry};
+use file_carving::{CarveLimits, REGISTRY, carve};
+use filesystem_probe::{FilesystemKind, probe};
+use partition_discovery::{DiskGeometry, discover_gpt, discover_mbr};
 use recovery_core::{
-    ByteRange, CancellationToken, CandidateId, Completeness, Confidence, FileCandidate,
+    ByteRange, CancellationToken, CandidateId, Completeness, Confidence, Extent, FileCandidate,
     Origin, RecoveryError, Validation,
 };
 use recovery_output::{
-    build_manifest, recover_all, validate_destination, CollisionPolicy, ItemOutcome,
+    CollisionPolicy, ItemOutcome, build_manifest, recover_all, validate_destination,
 };
 use serde::Serialize;
 use storage_io::{BlockDevice, FileImageDevice};
@@ -127,7 +131,10 @@ fn view(candidate: &FileCandidate) -> CandidateView {
         evidence: candidate
             .evidence
             .iter()
-            .map(|e| EvidenceView { detail: e.detail.clone(), supporting: e.supporting })
+            .map(|e| EvidenceView {
+                detail: e.detail.clone(),
+                supporting: e.supporting,
+            })
             .collect(),
     }
 }
@@ -180,7 +187,8 @@ fn scan_fat32<D: BlockDevice>(
             continue;
         }
         if entry.deleted {
-            if let Ok(candidate) = fat32_recovery::deleted_candidate(device, &volume, range, entry) {
+            if let Ok(candidate) = fat32_recovery::deleted_candidate(device, &volume, range, entry)
+            {
                 out.push(FileCandidate {
                     id: CandidateId::new(format!("fat32-del-{}", out.len())),
                     name: candidate.long_name.unwrap_or(candidate.short_name),
@@ -256,9 +264,7 @@ fn scan_exfat<D: BlockDevice>(
             continue;
         }
         if entry.deleted {
-            if let Ok(candidate) =
-                exfat_recovery::deleted_candidate(&volume, range, None, entry)
-            {
+            if let Ok(candidate) = exfat_recovery::deleted_candidate(&volume, range, None, entry) {
                 out.push(FileCandidate {
                     id: CandidateId::new(format!("exfat-del-{}", out.len())),
                     name: candidate.name,
@@ -300,6 +306,164 @@ fn scan_exfat<D: BlockDevice>(
     out
 }
 
+/// Builds a candidate set from every volume in an APFS container.
+///
+/// APFS stores file bytes as extents addressed in container blocks, so each
+/// extent is converted to a byte range and bounds-checked against the
+/// container before it is trusted. Metadata is untrusted input: a record that
+/// fails any check is skipped with a diagnostic rather than aborting the scan,
+/// so one corrupt inode cannot cost the user the rest of the volume.
+fn scan_apfs<D: BlockDevice>(
+    device: &D,
+    range: ByteRange,
+    diagnostics: &mut Vec<String>,
+) -> Vec<FileCandidate> {
+    const S_IFMT: u16 = 0o170000;
+    const S_IFREG: u16 = 0o100000;
+
+    // Reads the newest valid checkpoint superblock, not block zero, so a
+    // container whose first block is stale or damaged still opens.
+    let (container, volumes) = match apfs_recovery::discover_volumes(device, range) {
+        Ok(found) => found,
+        Err(_) => {
+            diagnostics.push("APFS container could not be read.".into());
+            return Vec::new();
+        }
+    };
+    if volumes.is_empty() {
+        diagnostics.push("APFS container declares no volumes.".into());
+        return Vec::new();
+    }
+
+    let block_size = u64::from(container.block_size);
+    let mut out = Vec::new();
+
+    for volume in &volumes {
+        let index = match apfs_recovery::read_volume_filesystem_index(
+            device,
+            range,
+            &container,
+            &volume.volume,
+            volume.xid,
+        ) {
+            Ok(index) => index,
+            Err(_) => {
+                diagnostics.push(format!(
+                    "APFS volume {} catalog could not be read; its files were skipped.",
+                    volume.object_id
+                ));
+                continue;
+            }
+        };
+
+        // Directory records give a file its name and parent. An inode with no
+        // record is unreachable from the tree, which is what deletion leaves
+        // behind, so those are still recovered - just marked as such.
+        let mut named: std::collections::BTreeMap<u64, &apfs_recovery::ApfsDirectoryEntry> =
+            std::collections::BTreeMap::new();
+        for entry in &index.directories {
+            named.entry(entry.file_id).or_insert(entry);
+        }
+
+        let mut skipped_extents = 0usize;
+        for (&inode_id, inode) in &index.inodes {
+            if inode.mode & S_IFMT != S_IFREG {
+                continue;
+            }
+            // FILE_EXTENT records are keyed by the dstream id, not the inode id.
+            let Some(extents) = index.extents.get(&inode.private_id) else {
+                continue;
+            };
+            let declared_size = inode.data_stream_size.unwrap_or(inode.uncompressed_size);
+
+            let (name, origin) = match named.get(&inode_id) {
+                Some(entry) => (entry.name.clone(), Origin::ActiveFilesystem),
+                None => (format!("inode-{inode_id}"), Origin::DeletedFilesystem),
+            };
+
+            let mut converted = Vec::new();
+            let mut sparse = false;
+            let mut truncated = false;
+            for extent in extents {
+                if extent.sparse {
+                    // A sparse extent holds no bytes on disk; it reads as zeros
+                    // and must not be pointed at block 0.
+                    sparse = true;
+                    continue;
+                }
+                let Some(offset) = extent
+                    .physical_block
+                    .checked_mul(block_size)
+                    .and_then(|o| o.checked_add(range.offset))
+                else {
+                    truncated = true;
+                    continue;
+                };
+                let Ok(source_range) = ByteRange::new(offset, extent.length) else {
+                    truncated = true;
+                    continue;
+                };
+                // Never hand the output engine a range outside the device.
+                if source_range.validate_within(device.capacity()).is_err() {
+                    truncated = true;
+                    continue;
+                }
+                let Ok(built) = Extent::new(source_range, extent.logical_offset) else {
+                    truncated = true;
+                    continue;
+                };
+                converted.push(built);
+            }
+            if truncated {
+                skipped_extents += 1;
+            }
+            if converted.is_empty() {
+                continue;
+            }
+            converted.sort_by_key(|extent| extent.logical_offset);
+
+            let present: u64 = converted.iter().map(|extent| extent.length()).sum();
+            let completeness = if truncated || (present < declared_size && !sparse) {
+                Completeness::Partial
+            } else {
+                Completeness::Complete
+            };
+
+            let mut evidence = Vec::new();
+            if sparse {
+                evidence.push(recovery_core::Evidence::supporting(
+                    "file is sparse; unwritten regions are restored as zeros",
+                ));
+            }
+            if truncated {
+                evidence.push(recovery_core::Evidence::detracting(
+                    "some extents fell outside the device and were dropped",
+                ));
+            }
+
+            out.push(FileCandidate {
+                id: CandidateId::new(format!("apfs-{}-{inode_id}", volume.object_id)),
+                name,
+                path: Vec::new(),
+                origin,
+                extents: converted,
+                declared_size,
+                completeness,
+                validation: Validation::NotAttempted,
+                evidence,
+            });
+        }
+
+        if skipped_extents > 0 {
+            diagnostics.push(format!(
+                "APFS volume {}: {skipped_extents} file(s) had extents outside the device.",
+                volume.object_id
+            ));
+        }
+    }
+    out
+}
+
 /// Scans an image file: partitions, filesystems, carving, then scoring.
 pub fn scan_image(path: &Path, include_carving: bool) -> Result<ScanResult, RecoveryError> {
     let device = FileImageDevice::open(path)?;
@@ -313,7 +477,10 @@ pub fn scan_image(path: &Path, include_carving: bool) -> Result<ScanResult, Reco
         .enumerate()
     {
         let evidence = probe(&device, range).ok();
-        let kind = evidence.as_ref().map(|e| e.kind).unwrap_or(FilesystemKind::Unknown);
+        let kind = evidence
+            .as_ref()
+            .map(|e| e.kind)
+            .unwrap_or(FilesystemKind::Unknown);
 
         partitions.push(PartitionView {
             index,
@@ -322,6 +489,7 @@ pub fn scan_image(path: &Path, include_carving: bool) -> Result<ScanResult, Reco
             filesystem: match kind {
                 FilesystemKind::Fat32 => "FAT32",
                 FilesystemKind::ExFat => "exFAT",
+                FilesystemKind::Apfs => "APFS",
                 FilesystemKind::Unknown => "unrecognised",
             }
             .to_string(),
@@ -336,6 +504,9 @@ pub fn scan_image(path: &Path, include_carving: bool) -> Result<ScanResult, Reco
             }
             FilesystemKind::ExFat => {
                 candidates.extend(scan_exfat(&device, range, &mut diagnostics))
+            }
+            FilesystemKind::Apfs => {
+                candidates.extend(scan_apfs(&device, range, &mut diagnostics))
             }
             FilesystemKind::Unknown => diagnostics.push(format!(
                 "Partition {index} holds no filesystem this build can read; carving may still find files."
@@ -375,10 +546,8 @@ pub fn recover(
     let cancel = CancellationToken::default();
 
     // The mandatory safety gate: never write onto the source.
-    let safe = validate_destination(destination, Some(source))
-        .map_err(RecoveryError::from)?;
-    std::fs::create_dir_all(safe.path())
-        .map_err(|e| RecoveryError::IoFailure(e.to_string()))?;
+    let safe = validate_destination(destination, Some(source)).map_err(RecoveryError::from)?;
+    std::fs::create_dir_all(safe.path()).map_err(|e| RecoveryError::IoFailure(e.to_string()))?;
 
     // Rebuild the candidate set so ids match what the UI selected from.
     let mut diagnostics = Vec::new();
@@ -390,6 +559,9 @@ pub fn recover(
             }
             Ok(FilesystemKind::ExFat) => {
                 candidates.extend(scan_exfat(&device, range, &mut diagnostics))
+            }
+            Ok(FilesystemKind::Apfs) => {
+                candidates.extend(scan_apfs(&device, range, &mut diagnostics))
             }
             _ => {}
         }
@@ -447,7 +619,12 @@ mod tests {
     #[test]
     fn labels_cover_every_variant() {
         // Every enum value must render, or the UI shows nothing.
-        for c in [Confidence::High, Confidence::Medium, Confidence::Low, Confidence::Unknown] {
+        for c in [
+            Confidence::High,
+            Confidence::Medium,
+            Confidence::Low,
+            Confidence::Unknown,
+        ] {
             assert!(!confidence_label(c).is_empty());
         }
         for v in [
@@ -459,10 +636,18 @@ mod tests {
         ] {
             assert!(!validation_label(v).is_empty());
         }
-        for c in [Completeness::Complete, Completeness::Partial, Completeness::MetadataOnly] {
+        for c in [
+            Completeness::Complete,
+            Completeness::Partial,
+            Completeness::MetadataOnly,
+        ] {
             assert!(!completeness_label(c).is_empty());
         }
-        for o in [Origin::ActiveFilesystem, Origin::DeletedFilesystem, Origin::Carved] {
+        for o in [
+            Origin::ActiveFilesystem,
+            Origin::DeletedFilesystem,
+            Origin::Carved,
+        ] {
             assert!(!origin_label(o).is_empty());
         }
     }
@@ -539,7 +724,8 @@ mod smoke {
         // Recover the photo through the same command path the UI uses.
         let out = std::env::temp_dir().join(format!("dr-smoke-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&out);
-        let result = recover(&image, &out, std::slice::from_ref(&photo.id), true).expect("recovery failed");
+        let result =
+            recover(&image, &out, std::slice::from_ref(&photo.id), true).expect("recovery failed");
         assert_eq!(result.written, 1, "expected one recovered file");
         assert!(std::path::Path::new(&result.manifest_path).exists());
         let _ = std::fs::remove_dir_all(&out);

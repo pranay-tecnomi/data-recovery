@@ -7,17 +7,21 @@
 
 use candidate_pipeline::run as run_pipeline;
 use fat32_recovery::{deleted_candidate, file_extents, parse_volume, read_root_entries};
-use filesystem_probe::{probe, FilesystemKind};
+use filesystem_probe::{FilesystemKind, probe};
 use integration_tests::fixture::{Fat32Image, MemoryDevice, SECTOR};
-use partition_discovery::{discover_mbr, DiskGeometry};
+use partition_discovery::{DiskGeometry, discover_mbr};
 use recovery_core::{
     ByteRange, CancellationToken, CandidateId, Completeness, Confidence, Extent, FileCandidate,
     Origin, Validation,
 };
 use recovery_output::{
-    build_manifest, recover_all, validate_destination, CollisionPolicy, ItemOutcome,
+    CollisionPolicy, ItemOutcome, build_manifest, recover_all, validate_destination,
 };
-use std::{fs, path::PathBuf, sync::atomic::{AtomicU64, Ordering}};
+use std::{
+    fs,
+    path::PathBuf,
+    sync::atomic::{AtomicU64, Ordering},
+};
 
 static ID: AtomicU64 = AtomicU64::new(0);
 
@@ -113,7 +117,11 @@ fn recovers_an_active_file_end_to_end() {
 
     // Score, then write out.
     let scored = run_pipeline(&device, vec![candidate], &CancellationToken::default()).unwrap();
-    assert_eq!(scored[0].validation, Validation::Valid, "JPEG should validate");
+    assert_eq!(
+        scored[0].validation,
+        Validation::Valid,
+        "JPEG should validate"
+    );
     assert_eq!(
         scored[0].confidence(),
         Confidence::High,
@@ -149,7 +157,10 @@ fn deleted_file_is_recovered_with_honest_confidence() {
 
     let volume = parse_volume(&device, partition).unwrap();
     let entries = read_root_entries(&device, partition, true).unwrap();
-    let deleted = entries.iter().find(|e| e.deleted).expect("deleted entry not found");
+    let deleted = entries
+        .iter()
+        .find(|e| e.deleted)
+        .expect("deleted entry not found");
 
     let recovered = deleted_candidate(&device, &volume, partition, deleted).unwrap();
     // The tombstone destroyed the first character; it must not be invented.
@@ -185,7 +196,11 @@ fn scanning_never_modifies_the_source() {
     .unwrap();
 
     // P0 acceptance: no source write is possible through the API.
-    assert_eq!(device.snapshot(), before, "the source was modified during a scan");
+    assert_eq!(
+        device.snapshot(),
+        before,
+        "the source was modified during a scan"
+    );
 }
 
 #[test]
@@ -219,7 +234,10 @@ fn a_carved_duplicate_defers_to_the_filesystem_record() {
 
     let volume = parse_volume(&device, partition).unwrap();
     let entries = read_root_entries(&device, partition, false).unwrap();
-    let entry = entries.iter().find(|e| e.short_name == "PHOTO.JPG").unwrap();
+    let entry = entries
+        .iter()
+        .find(|e| e.short_name == "PHOTO.JPG")
+        .unwrap();
     let extents = file_extents(&device, &volume, partition, entry).unwrap();
     let offset = extents.extents[0].source_range.offset;
 
@@ -239,9 +257,7 @@ fn a_carved_duplicate_defers_to_the_filesystem_record() {
         name: "carved.jpg".into(),
         path: vec!["carved".into()],
         origin: Origin::Carved,
-        extents: vec![
-            Extent::new(ByteRange::new(offset, photo.len() as u64).unwrap(), 0).unwrap(),
-        ],
+        extents: vec![Extent::new(ByteRange::new(offset, photo.len() as u64).unwrap(), 0).unwrap()],
         declared_size: photo.len() as u64,
         completeness: Completeness::Complete,
         validation: Validation::NotAttempted,
@@ -285,7 +301,10 @@ fn the_manifest_records_what_was_recovered() {
 
     let volume = parse_volume(&device, partition).unwrap();
     let entries = read_root_entries(&device, partition, false).unwrap();
-    let entry = entries.iter().find(|e| e.short_name == "PHOTO.JPG").unwrap();
+    let entry = entries
+        .iter()
+        .find(|e| e.short_name == "PHOTO.JPG")
+        .unwrap();
     let extents = file_extents(&device, &volume, partition, entry).unwrap();
 
     let candidate = FileCandidate {
@@ -384,7 +403,10 @@ fn corrupted_metadata_does_not_panic() {
         }
     }
     // The sweep must actually reach the deeper parsers, not bail at the MBR.
-    assert!(reached_entries > 100, "corruption sweep only reached {reached_entries} entries");
+    assert!(
+        reached_entries > 100,
+        "corruption sweep only reached {reached_entries} entries"
+    );
 }
 
 #[test]
@@ -396,14 +418,16 @@ fn cancellation_stops_the_pipeline_and_the_carver() {
     let token = CancellationToken::default();
     token.cancel();
 
-    assert!(file_carving::carve(
-        &device,
-        partition,
-        file_carving::REGISTRY,
-        &file_carving::CarveLimits::default(),
-        &token,
-    )
-    .is_err());
+    assert!(
+        file_carving::carve(
+            &device,
+            partition,
+            file_carving::REGISTRY,
+            &file_carving::CarveLimits::default(),
+            &token,
+        )
+        .is_err()
+    );
 
     let candidate = FileCandidate {
         id: CandidateId::new("c"),

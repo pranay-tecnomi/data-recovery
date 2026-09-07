@@ -39,7 +39,11 @@ pub enum ItemOutcome {
     /// Written in full.
     Written { path: PathBuf, bytes: u64 },
     /// Written, but the content is known to be incomplete.
-    WrittenPartial { path: PathBuf, bytes: u64, declared: u64 },
+    WrittenPartial {
+        path: PathBuf,
+        bytes: u64,
+        declared: u64,
+    },
     /// Skipped because a file already existed and the policy said to skip.
     Skipped { path: PathBuf },
     /// Nothing was written because the candidate had no locatable content.
@@ -111,15 +115,27 @@ fn stream_candidate<D: BlockDevice, W: Write>(
     let mut buffer = vec![0u8; COPY_BUFFER];
     let mut total: u64 = 0;
 
+    // Extents are frequently block-aligned, so the last one can run past the
+    // end of the file. Writing every extent byte would pad the output to the
+    // block boundary and corrupt the file. A declared size of zero means the
+    // size is unknown, in which case the extents are all we have to go on.
+    let limit = if candidate.declared_size > 0 {
+        candidate.declared_size
+    } else {
+        u64::MAX
+    };
+
     for extent in &candidate.extents {
+        if total >= limit {
+            break;
+        }
         let mut offset = extent.source_range.offset;
-        let mut remaining = extent.source_range.length;
+        let mut remaining = extent.source_range.length.min(limit - total);
         while remaining > 0 {
             cancel.check()?;
             let take = remaining.min(COPY_BUFFER as u64);
-            let length = usize::try_from(take).map_err(|_| {
-                RecoveryError::LengthTooLarge { length: take }
-            })?;
+            let length = usize::try_from(take)
+                .map_err(|_| RecoveryError::LengthTooLarge { length: take })?;
             let range = ByteRange::new(offset, take)?;
             range.validate_within(device.capacity())?;
 
@@ -201,9 +217,11 @@ fn recover_one<D: BlockDevice>(
         let result = stream_candidate(device, candidate, &mut file, cancel);
         match result {
             Ok(bytes) => {
-                file.flush().map_err(|e| RecoveryError::IoFailure(e.to_string()))?;
+                file.flush()
+                    .map_err(|e| RecoveryError::IoFailure(e.to_string()))?;
                 // Durability before the rename makes the finalisation meaningful.
-                file.sync_all().map_err(|e| RecoveryError::IoFailure(e.to_string()))?;
+                file.sync_all()
+                    .map_err(|e| RecoveryError::IoFailure(e.to_string()))?;
                 bytes
             }
             Err(error) => {
@@ -229,7 +247,10 @@ fn recover_one<D: BlockDevice>(
             declared: candidate.declared_size,
         })
     } else {
-        Ok(ItemOutcome::Written { path: final_path, bytes })
+        Ok(ItemOutcome::Written {
+            path: final_path,
+            bytes,
+        })
     }
 }
 
@@ -319,6 +340,34 @@ mod tests {
     }
 
     #[test]
+    fn a_block_aligned_extent_is_truncated_to_the_declared_size() {
+        // Filesystems allocate whole blocks, so the final extent routinely
+        // overruns the file. Writing the overrun would silently corrupt every
+        // file whose size is not a multiple of the block size.
+        let root = workspace("aligned-tail");
+        // One 10-byte extent describing a file that is only 5 bytes long.
+        let mut c = candidate("notes.txt", 0, 10, Completeness::Complete);
+        c.declared_size = 5;
+        let item = recover_candidate(
+            &device(),
+            &safe(&root),
+            &c,
+            CollisionPolicy::Rename,
+            &CancellationToken::default(),
+        )
+        .unwrap();
+
+        match item.outcome {
+            ItemOutcome::Written { path, bytes } => {
+                assert_eq!(bytes, 5, "only the declared bytes belong to the file");
+                assert_eq!(fs::read(&path).unwrap(), b"ABCDE");
+            }
+            other => panic!("expected a complete write, got {other:?}"),
+        }
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
     fn writes_a_complete_file() {
         let root = workspace("write");
         let c = candidate("hello.txt", 0, 10, Completeness::Complete);
@@ -385,7 +434,11 @@ mod tests {
         )
         .unwrap();
         match item.outcome {
-            ItemOutcome::WrittenPartial { path, bytes, declared } => {
+            ItemOutcome::WrittenPartial {
+                path,
+                bytes,
+                declared,
+            } => {
                 assert_eq!((bytes, declared), (10, 100));
                 // A truncated file must announce itself.
                 assert!(path.to_string_lossy().ends_with(".partial"));
@@ -436,7 +489,11 @@ mod tests {
         match item.outcome {
             ItemOutcome::Written { path, .. } => {
                 // Compare against the canonicalised root the writer used.
-                assert!(path.starts_with(dest.path()), "{path:?} escaped {:?}", dest.path());
+                assert!(
+                    path.starts_with(dest.path()),
+                    "{path:?} escaped {:?}",
+                    dest.path()
+                );
                 // The traversal was neutralised rather than honoured.
                 assert!(!path.to_string_lossy().contains("/../"));
             }
@@ -454,8 +511,7 @@ mod tests {
         let token = CancellationToken::default();
 
         for expected in ["dup.txt", "dup (2).txt", "dup (3).txt"] {
-            let item =
-                recover_candidate(&d, &dest, &c, CollisionPolicy::Rename, &token).unwrap();
+            let item = recover_candidate(&d, &dest, &c, CollisionPolicy::Rename, &token).unwrap();
             match item.outcome {
                 ItemOutcome::Written { path, .. } => {
                     assert!(path.ends_with(expected), "{path:?} != {expected}");
@@ -510,13 +566,8 @@ mod tests {
         let token = CancellationToken::default();
         token.cancel();
 
-        let result = recover_candidate(
-            &device(),
-            &safe(&root),
-            &c,
-            CollisionPolicy::Rename,
-            &token,
-        );
+        let result =
+            recover_candidate(&device(), &safe(&root), &c, CollisionPolicy::Rename, &token);
         assert!(result.is_err());
         // An interrupted write must not leave debris behind.
         assert!(

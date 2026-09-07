@@ -40,7 +40,9 @@ pub struct Signature {
 impl Signature {
     /// Longest look-behind a detector needs, so chunk overlap can be sized.
     pub fn lookbehind(&self) -> usize {
-        self.header.len().max(self.footer.map(|f| f.len()).unwrap_or(0))
+        self.header
+            .len()
+            .max(self.footer.map(|f| f.len()).unwrap_or(0))
     }
 }
 
@@ -145,8 +147,7 @@ mod tests {
         for signature in REGISTRY {
             // The MVP registers only formats whose end can be validated.
             assert!(
-                signature.footer.is_some()
-                    || signature.boundary != BoundaryStrategy::Footer,
+                signature.footer.is_some() || signature.boundary != BoundaryStrategy::Footer,
                 "{} claims a footer strategy without a footer",
                 signature.id
             );

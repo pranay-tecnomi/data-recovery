@@ -51,7 +51,11 @@ pub fn manifest_line(candidate: &FileCandidate, item: &RecoveredItem) -> String 
         ItemOutcome::Written { path, bytes } => {
             ("written", path.display().to_string(), *bytes, *bytes)
         }
-        ItemOutcome::WrittenPartial { path, bytes, declared } => (
+        ItemOutcome::WrittenPartial {
+            path,
+            bytes,
+            declared,
+        } => (
             "written_partial",
             path.display().to_string(),
             *bytes,
@@ -185,7 +189,9 @@ mod tests {
     fn records_skipped_and_empty_outcomes() {
         let skipped = RecoveredItem {
             candidate_id: "c1".into(),
-            outcome: ItemOutcome::Skipped { path: PathBuf::from("/out/photo.jpg") },
+            outcome: ItemOutcome::Skipped {
+                path: PathBuf::from("/out/photo.jpg"),
+            },
         };
         assert!(manifest_line(&candidate(), &skipped).contains(r#""status":"skipped""#));
 

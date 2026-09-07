@@ -11,6 +11,6 @@ pub mod registry;
 pub mod scanner;
 
 pub use registry::{
-    max_lookbehind, BoundaryStrategy, CarveLimits, Signature, GIF, JPEG, PDF, PNG, REGISTRY, ZIP,
+    BoundaryStrategy, CarveLimits, GIF, JPEG, PDF, PNG, REGISTRY, Signature, ZIP, max_lookbehind,
 };
 pub use scanner::carve;

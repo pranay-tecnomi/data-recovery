@@ -25,7 +25,11 @@ pub struct ValidationReport {
 }
 
 impl ValidationReport {
-    fn new(validation: Validation, detail: impl Into<String>, format: Option<&'static str>) -> Self {
+    fn new(
+        validation: Validation,
+        detail: impl Into<String>,
+        format: Option<&'static str>,
+    ) -> Self {
         let supporting = matches!(validation, Validation::Valid | Validation::PartiallyValid);
         Self {
             validation,
@@ -75,10 +79,7 @@ fn read_prefix<D: BlockDevice>(
             break;
         }
         let start = buffer.len();
-        buffer.resize(
-            start + usize::try_from(take).unwrap_or(0),
-            0,
-        );
+        buffer.resize(start + usize::try_from(take).unwrap_or(0), 0);
         match device.read(range, &mut buffer[start..]) {
             Ok(read) => buffer.truncate(start + read),
             Err(_) => {
@@ -107,7 +108,11 @@ pub fn validate<D: BlockDevice>(
             "content could not be read, so structure could not be checked",
         ));
     }
-    Ok(validate_bytes(&data, &candidate.name, candidate.declared_size))
+    Ok(validate_bytes(
+        &data,
+        &candidate.name,
+        candidate.declared_size,
+    ))
 }
 
 /// Validates an in-memory prefix. Separated so the format rules are testable
@@ -127,14 +132,19 @@ pub fn validate_bytes(data: &[u8], name: &str, declared_size: u64) -> Validation
         Some("png") => validate_png(data, declared_size),
         Some("pdf") => validate_pdf(data),
         Some("zip") => validate_zip(data),
-        Some("gif") => ValidationReport::new(Validation::Valid, "GIF header is well formed", Some("gif")),
-        None if extension.is_empty() => {
-            ValidationReport::indeterminate("no recognised signature and no extension to check against")
+        Some("gif") => {
+            ValidationReport::new(Validation::Valid, "GIF header is well formed", Some("gif"))
         }
+        None if extension.is_empty() => ValidationReport::indeterminate(
+            "no recognised signature and no extension to check against",
+        ),
         None => {
             // A known extension whose content does not match is a genuine
             // contradiction, not merely an unknown format.
-            if matches!(extension.as_str(), "jpg" | "jpeg" | "png" | "pdf" | "zip" | "gif") {
+            if matches!(
+                extension.as_str(),
+                "jpg" | "jpeg" | "png" | "pdf" | "zip" | "gif"
+            ) {
                 ValidationReport::new(
                     Validation::Invalid,
                     format!("content does not match the .{extension} signature"),
@@ -144,7 +154,9 @@ pub fn validate_bytes(data: &[u8], name: &str, declared_size: u64) -> Validation
                 ValidationReport::indeterminate("no validator is registered for this format")
             }
         }
-        Some(other) => ValidationReport::new(Validation::Valid, "signature recognised", Some(other)),
+        Some(other) => {
+            ValidationReport::new(Validation::Valid, "signature recognised", Some(other))
+        }
     }
 }
 
@@ -218,7 +230,11 @@ fn validate_jpeg(data: &[u8], declared_size: u64) -> ValidationReport {
             Some("jpeg"),
         );
     }
-    ValidationReport::new(Validation::Valid, "JPEG marker chain is well formed", Some("jpeg"))
+    ValidationReport::new(
+        Validation::Valid,
+        "JPEG marker chain is well formed",
+        Some("jpeg"),
+    )
 }
 
 /// PNG: signature, an IHDR first chunk, and a plausible chunk chain.
@@ -240,7 +256,12 @@ fn validate_png(data: &[u8], declared_size: u64) -> ValidationReport {
     let mut index = 8usize;
     let mut saw_end = false;
     while index + 12 <= data.len() {
-        let length = u32::from_be_bytes([data[index], data[index + 1], data[index + 2], data[index + 3]]);
+        let length = u32::from_be_bytes([
+            data[index],
+            data[index + 1],
+            data[index + 2],
+            data[index + 3],
+        ]);
         let kind = &data[index + 4..index + 8];
         if kind == b"IEND" {
             saw_end = true;
@@ -267,7 +288,11 @@ fn validate_png(data: &[u8], declared_size: u64) -> ValidationReport {
             Some("png"),
         );
     }
-    ValidationReport::new(Validation::Valid, "PNG chunk chain is well formed", Some("png"))
+    ValidationReport::new(
+        Validation::Valid,
+        "PNG chunk chain is well formed",
+        Some("png"),
+    )
 }
 
 /// PDF: a version header, and ideally a trailer.
@@ -295,7 +320,11 @@ fn validate_zip(data: &[u8]) -> ValidationReport {
             Some("zip"),
         );
     }
-    ValidationReport::new(Validation::Valid, "ZIP local file header is well formed", Some("zip"))
+    ValidationReport::new(
+        Validation::Valid,
+        "ZIP local file header is well formed",
+        Some("zip"),
+    )
 }
 
 #[cfg(test)]
@@ -371,7 +400,10 @@ mod tests {
 
     #[test]
     fn truncated_png_is_partial() {
-        assert_eq!(check(&png(false), "image.png").validation, Validation::PartiallyValid);
+        assert_eq!(
+            check(&png(false), "image.png").validation,
+            Validation::PartiallyValid
+        );
     }
 
     #[test]
@@ -393,16 +425,25 @@ mod tests {
 
     #[test]
     fn accepts_pdf_and_zip_headers() {
-        assert_eq!(check(b"%PDF-1.7\n%...", "doc.pdf").validation, Validation::Valid);
+        assert_eq!(
+            check(b"%PDF-1.7\n%...", "doc.pdf").validation,
+            Validation::Valid
+        );
         let mut zip = b"PK\x03\x04".to_vec();
         zip.resize(40, 0);
         assert_eq!(check(&zip, "archive.zip").validation, Validation::Valid);
-        assert_eq!(check(b"PK\x05\x06", "empty.zip").validation, Validation::Valid);
+        assert_eq!(
+            check(b"PK\x05\x06", "empty.zip").validation,
+            Validation::Valid
+        );
     }
 
     #[test]
     fn rejects_a_pdf_without_a_version() {
-        assert_eq!(check(b"%PDF-XY!!", "doc.pdf").validation, Validation::Invalid);
+        assert_eq!(
+            check(b"%PDF-XY!!", "doc.pdf").validation,
+            Validation::Invalid
+        );
     }
 
     #[test]
@@ -419,7 +460,10 @@ mod tests {
         let r = check(&[0u8; 64], "notes.xyz");
         assert_eq!(r.validation, Validation::Indeterminate);
         assert!(r.evidence[0].supporting);
-        assert_eq!(check(&[0u8; 64], "noextension").validation, Validation::Indeterminate);
+        assert_eq!(
+            check(&[0u8; 64], "noextension").validation,
+            Validation::Indeterminate
+        );
     }
 
     #[test]

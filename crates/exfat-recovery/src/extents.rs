@@ -10,8 +10,8 @@ use storage_io::BlockDevice;
 
 use crate::{
     bitmap::AllocationBitmap,
-    boot::{io_error, ExfatVolume},
-    directory::{cluster_chain, DirectoryEntry, ATTR_DIRECTORY},
+    boot::{ExfatVolume, io_error},
+    directory::{ATTR_DIRECTORY, DirectoryEntry, cluster_chain},
 };
 
 /// How much of a stream the extents are believed to represent.
@@ -71,7 +71,11 @@ pub fn stream_extents<D: BlockDevice>(
         }
         return Ok(StreamExtents {
             extents: Vec::new(),
-            state: if declared_size == 0 { ExtentState::Recoverable } else { ExtentState::MetadataOnly },
+            state: if declared_size == 0 {
+                ExtentState::Recoverable
+            } else {
+                ExtentState::MetadataOnly
+            },
             declared_size,
             recovered_size: 0,
             diagnostics,
@@ -94,8 +98,13 @@ pub fn stream_extents<D: BlockDevice>(
         }
     };
 
-    let (extents, recovered_size) =
-        build_extents(volume, volume_range, &clusters, declared_size, &mut diagnostics)?;
+    let (extents, recovered_size) = build_extents(
+        volume,
+        volume_range,
+        &clusters,
+        declared_size,
+        &mut diagnostics,
+    )?;
 
     let state = if declared_size == 0 {
         ExtentState::Recoverable
@@ -110,7 +119,13 @@ pub fn stream_extents<D: BlockDevice>(
         ExtentState::Recoverable
     };
 
-    Ok(StreamExtents { extents, state, declared_size, recovered_size, diagnostics })
+    Ok(StreamExtents {
+        extents,
+        state,
+        declared_size,
+        recovered_size,
+        diagnostics,
+    })
 }
 
 /// Clusters of a contiguous run, stopping at the end of the heap.
@@ -277,8 +292,13 @@ pub fn deleted_candidate(
         clusters.push(cluster);
     }
 
-    let (extents, recovered_size) =
-        build_extents(volume, volume_range, &clusters, declared_size, &mut diagnostics)?;
+    let (extents, recovered_size) = build_extents(
+        volume,
+        volume_range,
+        &clusters,
+        declared_size,
+        &mut diagnostics,
+    )?;
     evidence.extend(diagnostics);
 
     let state = if extents.is_empty() {
@@ -295,11 +315,11 @@ pub fn deleted_candidate(
     if entry.no_fat_chain {
         evidence.push("stream was recorded as contiguous, so the run is not inferred".into());
     } else {
-        evidence.push(
-            "cluster chain released by deletion; contiguous allocation inferred".into(),
-        );
+        evidence.push("cluster chain released by deletion; contiguous allocation inferred".into());
         if needed > 1 {
-            evidence.push("multi-cluster file may have been fragmented; contiguity is unverified".into());
+            evidence.push(
+                "multi-cluster file may have been fragmented; contiguity is unverified".into(),
+            );
         }
     }
     if bitmap.is_none() {
@@ -336,7 +356,9 @@ pub fn deleted_candidate(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::testimage::{image, Mem, BITMAP_CLUSTER, CLUSTER, CLUSTER_COUNT, HEAP_SECTOR, SECTOR};
+    use crate::testimage::{
+        BITMAP_CLUSTER, CLUSTER, CLUSTER_COUNT, HEAP_SECTOR, Mem, SECTOR, image,
+    };
 
     fn volume(m: &Mem) -> (ExfatVolume, ByteRange) {
         (crate::parse_volume(m, m.range()).unwrap(), m.range())
@@ -356,7 +378,14 @@ mod tests {
 
     fn bitmap(m: &Mem) -> AllocationBitmap {
         let (v, r) = volume(m);
-        AllocationBitmap::load(m, &v, r, BITMAP_CLUSTER, u64::from(CLUSTER_COUNT).div_ceil(8)).unwrap()
+        AllocationBitmap::load(
+            m,
+            &v,
+            r,
+            BITMAP_CLUSTER,
+            u64::from(CLUSTER_COUNT).div_ceil(8),
+        )
+        .unwrap()
     }
 
     fn cluster_offset(n: u32) -> u64 {
@@ -424,7 +453,11 @@ mod tests {
         assert_eq!(s.state, ExtentState::PartiallyRecoverable);
         // A damaged tail must not discard the valid head.
         assert_eq!(s.recovered_size, 1024);
-        assert!(s.diagnostics.iter().any(|d| d.contains("did not resolve cleanly")));
+        assert!(
+            s.diagnostics
+                .iter()
+                .any(|d| d.contains("did not resolve cleanly"))
+        );
     }
 
     #[test]
@@ -435,7 +468,11 @@ mod tests {
         // Only 500 bytes were ever written; the rest is uninitialised.
         e.valid_data_length = 500;
         let s = stream_extents(&m, &v, r, &e).unwrap();
-        assert!(s.diagnostics.iter().any(|d| d.contains("were ever written")));
+        assert!(
+            s.diagnostics
+                .iter()
+                .any(|d| d.contains("were ever written"))
+        );
     }
 
     #[test]
@@ -485,7 +522,11 @@ mod tests {
         let c = deleted_candidate(&v, r, Some(&b), &entry(5, 1500, true, true)).unwrap();
         assert_eq!(c.state, ExtentState::Recoverable);
         assert_eq!(c.confidence, Confidence::Medium);
-        assert!(c.evidence.iter().any(|e| e.contains("recorded as contiguous")));
+        assert!(
+            c.evidence
+                .iter()
+                .any(|e| e.contains("recorded as contiguous"))
+        );
     }
 
     #[test]

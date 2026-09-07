@@ -49,7 +49,11 @@ pub fn sanitize_component(input: &str) -> SanitizedName {
     // Windows silently strips trailing dots and spaces, which would otherwise
     // make the created name differ from the requested one.
     let trimmed = out.trim_end_matches(['.', ' ']);
-    let mut out = if trimmed.is_empty() { String::new() } else { trimmed.to_string() };
+    let mut out = if trimmed.is_empty() {
+        String::new()
+    } else {
+        trimmed.to_string()
+    };
 
     // Truncate on a character boundary, not a byte index.
     if out.chars().count() > MAX_COMPONENT {
@@ -150,10 +154,22 @@ mod tests {
     #[test]
     fn output_is_always_usable() {
         // Whatever the input, the result satisfies every Windows rule.
-        for input in ["", "...", "NUL", "a/b", "\u{0}", "  . ", "COM9.tar.gz", &"x".repeat(900)] {
+        for input in [
+            "",
+            "...",
+            "NUL",
+            "a/b",
+            "\u{0}",
+            "  . ",
+            "COM9.tar.gz",
+            &"x".repeat(900),
+        ] {
             let out = s(input);
             assert!(!out.is_empty());
-            assert!(!out.chars().any(|c| RESERVED_CHARS.contains(&c) || (c as u32) < 0x20));
+            assert!(
+                !out.chars()
+                    .any(|c| RESERVED_CHARS.contains(&c) || (c as u32) < 0x20)
+            );
             assert!(!out.ends_with('.') && !out.ends_with(' '));
             assert!(out.chars().count() <= MAX_COMPONENT + 1);
             let stem = out.split('.').next().unwrap();

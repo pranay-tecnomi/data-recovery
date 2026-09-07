@@ -116,9 +116,7 @@ pub fn extents_overlap(a: &[Extent], b: &[Extent]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use recovery_core::{
-        ByteRange, CandidateId, Completeness, Confidence, Evidence, Validation,
-    };
+    use recovery_core::{ByteRange, CandidateId, Completeness, Confidence, Evidence, Validation};
 
     fn candidate(name: &str, offset: u64, size: u64, origin: Origin) -> FileCandidate {
         FileCandidate {
@@ -198,7 +196,8 @@ mod tests {
     #[test]
     fn prefers_the_higher_confidence_duplicate() {
         let mut weak = candidate("weak.jpg", 4096, 100, Origin::DeletedFilesystem);
-        weak.evidence.push(Evidence::detracting("clusters partly reallocated"));
+        weak.evidence
+            .push(Evidence::detracting("clusters partly reallocated"));
         let strong = candidate("strong.jpg", 4096, 100, Origin::DeletedFilesystem);
         assert!(strong.confidence() > weak.confidence());
         let out = deduplicate(vec![weak, strong]);

@@ -7,7 +7,7 @@
 use recovery_core::{ByteRange, RecoveryResult};
 use storage_io::BlockDevice;
 
-use crate::boot::{io_error, ExfatVolume, FIRST_CLUSTER};
+use crate::boot::{ExfatVolume, FIRST_CLUSTER, io_error};
 
 /// Refuses to buffer a bitmap larger than this, so a corrupted length cannot
 /// drive an unbounded allocation.
@@ -66,7 +66,10 @@ impl AllocationBitmap {
                 return Err(io_error("allocation bitmap extends outside the volume"));
             }
             let start = bits.len();
-            bits.resize(start + usize::try_from(take).map_err(|_| io_error("bitmap chunk too large"))?, 0);
+            bits.resize(
+                start + usize::try_from(take).map_err(|_| io_error("bitmap chunk too large"))?,
+                0,
+            );
             let read = device.read(range, &mut bits[start..])?;
             if read != bits.len() - start {
                 return Err(io_error("short allocation bitmap read"));
@@ -80,7 +83,10 @@ impl AllocationBitmap {
             }
         }
 
-        Ok(Self { bits, cluster_count: volume.cluster_count })
+        Ok(Self {
+            bits,
+            cluster_count: volume.cluster_count,
+        })
     }
 
     /// Whether `cluster` is marked in use.
@@ -112,7 +118,7 @@ impl AllocationBitmap {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::testimage::{image, BITMAP_CLUSTER, CLUSTER_COUNT};
+    use crate::testimage::{BITMAP_CLUSTER, CLUSTER_COUNT, image};
 
     fn load(m: &crate::testimage::Mem) -> RecoveryResult<AllocationBitmap> {
         let v = crate::parse_volume(m, m.range()).unwrap();

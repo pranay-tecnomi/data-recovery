@@ -4,7 +4,7 @@
 //! aggregated here, from evidence, so a score is reproducible for identical
 //! evidence rather than asserted by whichever module happened to build it.
 
-use crate::{extent, ByteRange, CandidateId, Extent, RecoveryResult};
+use crate::{ByteRange, CandidateId, Extent, RecoveryResult, extent};
 
 /// Where a candidate came from. Validation modifies confidence but never
 /// erases provenance: a valid carved file and a metadata-recovered file retain
@@ -67,11 +67,17 @@ pub struct Evidence {
 
 impl Evidence {
     pub fn supporting(detail: impl Into<String>) -> Self {
-        Self { detail: detail.into(), supporting: true }
+        Self {
+            detail: detail.into(),
+            supporting: true,
+        }
     }
 
     pub fn detracting(detail: impl Into<String>) -> Self {
-        Self { detail: detail.into(), supporting: false }
+        Self {
+            detail: detail.into(),
+            supporting: false,
+        }
     }
 }
 
@@ -173,7 +179,11 @@ impl FileCandidate {
 mod tests {
     use super::*;
 
-    fn candidate(origin: Origin, completeness: Completeness, validation: Validation) -> FileCandidate {
+    fn candidate(
+        origin: Origin,
+        completeness: Completeness,
+        validation: Validation,
+    ) -> FileCandidate {
         FileCandidate {
             id: CandidateId::new("c1"),
             name: "photo.jpg".into(),
@@ -189,13 +199,21 @@ mod tests {
 
     #[test]
     fn active_validated_files_reach_high() {
-        let c = candidate(Origin::ActiveFilesystem, Completeness::Complete, Validation::Valid);
+        let c = candidate(
+            Origin::ActiveFilesystem,
+            Completeness::Complete,
+            Validation::Valid,
+        );
         assert_eq!(c.confidence(), Confidence::High);
     }
 
     #[test]
     fn deleted_records_cannot_reach_high_on_metadata_alone() {
-        let c = candidate(Origin::DeletedFilesystem, Completeness::Complete, Validation::Valid);
+        let c = candidate(
+            Origin::DeletedFilesystem,
+            Completeness::Complete,
+            Validation::Valid,
+        );
         assert_eq!(c.confidence(), Confidence::Medium);
     }
 
@@ -208,40 +226,65 @@ mod tests {
     #[test]
     fn failed_validation_dominates_perfect_metadata() {
         // An active, complete record whose bytes contradict the format.
-        let c = candidate(Origin::ActiveFilesystem, Completeness::Complete, Validation::Invalid);
+        let c = candidate(
+            Origin::ActiveFilesystem,
+            Completeness::Complete,
+            Validation::Invalid,
+        );
         assert_eq!(c.confidence(), Confidence::Unknown);
     }
 
     #[test]
     fn unvalidated_content_cannot_reach_high() {
-        let c = candidate(Origin::ActiveFilesystem, Completeness::Complete, Validation::NotAttempted);
+        let c = candidate(
+            Origin::ActiveFilesystem,
+            Completeness::Complete,
+            Validation::NotAttempted,
+        );
         assert_eq!(c.confidence(), Confidence::Medium);
     }
 
     #[test]
     fn indeterminate_validation_is_not_treated_as_invalid() {
         // A validator timeout must not reject an otherwise good candidate.
-        let c = candidate(Origin::ActiveFilesystem, Completeness::Complete, Validation::Indeterminate);
+        let c = candidate(
+            Origin::ActiveFilesystem,
+            Completeness::Complete,
+            Validation::Indeterminate,
+        );
         assert_eq!(c.confidence(), Confidence::Medium);
     }
 
     #[test]
     fn partial_content_caps_confidence() {
-        let c = candidate(Origin::ActiveFilesystem, Completeness::Partial, Validation::Valid);
+        let c = candidate(
+            Origin::ActiveFilesystem,
+            Completeness::Partial,
+            Validation::Valid,
+        );
         assert_eq!(c.confidence(), Confidence::Low);
     }
 
     #[test]
     fn metadata_only_candidates_are_unknown() {
-        let c = candidate(Origin::ActiveFilesystem, Completeness::MetadataOnly, Validation::Valid);
+        let c = candidate(
+            Origin::ActiveFilesystem,
+            Completeness::MetadataOnly,
+            Validation::Valid,
+        );
         assert_eq!(c.confidence(), Confidence::Unknown);
     }
 
     #[test]
     fn detracting_evidence_lowers_the_band() {
-        let mut c = candidate(Origin::ActiveFilesystem, Completeness::Complete, Validation::Valid);
+        let mut c = candidate(
+            Origin::ActiveFilesystem,
+            Completeness::Complete,
+            Validation::Valid,
+        );
         assert_eq!(c.confidence(), Confidence::High);
-        c.evidence.push(Evidence::detracting("read error inside an extent"));
+        c.evidence
+            .push(Evidence::detracting("read error inside an extent"));
         assert_eq!(c.confidence(), Confidence::Medium);
     }
 
@@ -257,14 +300,22 @@ mod tests {
 
     #[test]
     fn scores_are_reproducible_for_identical_evidence() {
-        let a = candidate(Origin::DeletedFilesystem, Completeness::Complete, Validation::Valid);
+        let a = candidate(
+            Origin::DeletedFilesystem,
+            Completeness::Complete,
+            Validation::Valid,
+        );
         let b = a.clone();
         assert_eq!(a.confidence(), b.confidence());
     }
 
     #[test]
     fn reports_sizes_and_paths() {
-        let c = candidate(Origin::ActiveFilesystem, Completeness::Complete, Validation::Valid);
+        let c = candidate(
+            Origin::ActiveFilesystem,
+            Completeness::Complete,
+            Validation::Valid,
+        );
         assert_eq!(c.recovered_size().unwrap(), 1024);
         assert_eq!(c.display_path(), "DCIM/photo.jpg");
         assert_eq!(c.source_ranges().len(), 1);
@@ -272,7 +323,11 @@ mod tests {
 
     #[test]
     fn display_path_handles_root_level_files() {
-        let mut c = candidate(Origin::ActiveFilesystem, Completeness::Complete, Validation::Valid);
+        let mut c = candidate(
+            Origin::ActiveFilesystem,
+            Completeness::Complete,
+            Validation::Valid,
+        );
         c.path.clear();
         assert_eq!(c.display_path(), "photo.jpg");
     }

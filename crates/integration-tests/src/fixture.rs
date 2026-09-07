@@ -20,6 +20,11 @@ impl MemoryDevice {
         ByteRange::new(0, self.capacity()).unwrap()
     }
 
+    /// Capacity, for tests that must build a range before opening a device.
+    pub fn capacity_for_test(&self) -> u64 {
+        self.0.len() as u64
+    }
+
     /// Snapshot for verifying the source was never modified.
     pub fn snapshot(&self) -> Vec<u8> {
         self.0.clone()
@@ -63,8 +68,7 @@ impl Fat32Image {
         let sectors_per_cluster = 1usize;
         let fat_count = 2usize;
         let data_sectors = 66_000usize;
-        let volume_sectors =
-            reserved_sectors + fat_count * sectors_per_fat + data_sectors;
+        let volume_sectors = reserved_sectors + fat_count * sectors_per_fat + data_sectors;
         let total_sectors = partition_start_sector + volume_sectors;
 
         let mut bytes = vec![0u8; total_sectors * SECTOR];

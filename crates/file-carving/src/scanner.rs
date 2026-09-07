@@ -89,9 +89,11 @@ fn resolve_end<D: BlockDevice>(
         )?;
         range.validate_within(capacity)?;
 
-        let mut buffer = vec![0u8; usize::try_from(take).map_err(|_| {
-            RecoveryError::LengthTooLarge { length: take }
-        })?];
+        let mut buffer = vec![
+            0u8;
+            usize::try_from(take)
+                .map_err(|_| { RecoveryError::LengthTooLarge { length: take } })?
+        ];
         let read = device.read(range, &mut buffer)?;
         if read == 0 {
             break;
@@ -104,7 +106,8 @@ fn resolve_end<D: BlockDevice>(
         searchable.extend_from_slice(&buffer);
 
         if let Some(position) = find_from(&searchable, footer, 0) {
-            let end_in_span = searched + (position as u64) - (carry_len as u64) + footer.len() as u64;
+            let end_in_span =
+                searched + (position as u64) - (carry_len as u64) + footer.len() as u64;
             // PNG's IEND is followed by a 4-byte CRC that belongs to the file.
             let end_in_span = if signature.boundary == BoundaryStrategy::StructureWalk {
                 (end_in_span + 4).min(ceiling)
@@ -156,9 +159,11 @@ pub fn carve<D: BlockDevice>(
         let take = (range_end - cursor).min(chunk_size as u64);
         let chunk_range = ByteRange::new(cursor, take)?;
         chunk_range.validate_within(device.capacity())?;
-        let mut buffer = vec![0u8; usize::try_from(take).map_err(|_| {
-            RecoveryError::LengthTooLarge { length: take }
-        })?];
+        let mut buffer = vec![
+            0u8;
+            usize::try_from(take)
+                .map_err(|_| { RecoveryError::LengthTooLarge { length: take } })?
+        ];
         let read = device.read(chunk_range, &mut buffer)?;
         if read == 0 {
             break;
@@ -187,7 +192,10 @@ pub fn carve<D: BlockDevice>(
                 break;
             }
             // A header inside an already-carved file is part of that file.
-            if claimed.iter().any(|&(s, e)| detection.offset >= s && detection.offset < e) {
+            if claimed
+                .iter()
+                .any(|&(s, e)| detection.offset >= s && detection.offset < e)
+            {
                 continue;
             }
             let signature = &signatures[detection.signature_index];
@@ -310,7 +318,10 @@ mod tests {
 
     fn small_limits() -> CarveLimits {
         // A small chunk exercises the overlap logic in tests.
-        CarveLimits { chunk_size: 256, ..CarveLimits::default() }
+        CarveLimits {
+            chunk_size: 256,
+            ..CarveLimits::default()
+        }
     }
 
     fn carve_all(device: &Mem, limits: &CarveLimits) -> Vec<FileCandidate> {
@@ -338,7 +349,12 @@ mod tests {
         assert_eq!(out[0].extents[0].source_range.length, file.len() as u64);
         // A located terminator means the boundary is evidenced.
         assert_eq!(out[0].completeness, Completeness::Complete);
-        assert!(out[0].evidence.iter().any(|e| e.detail.contains("terminator located")));
+        assert!(
+            out[0]
+                .evidence
+                .iter()
+                .any(|e| e.detail.contains("terminator located"))
+        );
     }
 
     #[test]
@@ -349,17 +365,24 @@ mod tests {
         assert_eq!(out.len(), 1);
         // The end was never established, so this must not claim completeness.
         assert_eq!(out[0].completeness, Completeness::Partial);
-        assert!(out[0].evidence.iter().any(|e| !e.supporting && e.detail.contains("not established")));
+        assert!(
+            out[0]
+                .evidence
+                .iter()
+                .any(|e| !e.supporting && e.detail.contains("not established"))
+        );
     }
 
     #[test]
     fn every_carve_records_fragmentation_uncertainty() {
         let out = carve_all(&Mem(jpeg(300, true)), &small_limits());
         // Raw carving cannot exclude fragmentation, and must say so.
-        assert!(out[0]
-            .evidence
-            .iter()
-            .any(|e| !e.supporting && e.detail.contains("fragmentation")));
+        assert!(
+            out[0]
+                .evidence
+                .iter()
+                .any(|e| !e.supporting && e.detail.contains("fragmentation"))
+        );
     }
 
     #[test]
@@ -379,7 +402,9 @@ mod tests {
     #[test]
     fn random_bytes_produce_no_candidates() {
         // Deterministic pseudo-random filler with no signatures.
-        let disk: Vec<u8> = (0..4096u32).map(|i| (i.wrapping_mul(37) % 200) as u8 + 1).collect();
+        let disk: Vec<u8> = (0..4096u32)
+            .map(|i| (i.wrapping_mul(37) % 200) as u8 + 1)
+            .collect();
         let out = carve_all(&Mem(disk), &small_limits());
         assert!(out.is_empty(), "false positives: {out:?}");
     }
@@ -410,7 +435,10 @@ mod tests {
         let out = carve_all(&Mem(disk), &small_limits());
         assert_eq!(out.len(), 2);
         assert!(out.iter().any(|c| c.extents[0].source_range.offset == 0));
-        assert!(out.iter().any(|c| c.extents[0].source_range.offset == png_offset));
+        assert!(
+            out.iter()
+                .any(|c| c.extents[0].source_range.offset == png_offset)
+        );
     }
 
     #[test]
@@ -478,7 +506,11 @@ mod tests {
         for _ in 0..20 {
             disk.extend_from_slice(&jpeg(200, true));
         }
-        let limits = CarveLimits { chunk_size: 256, max_candidates: 5, ..CarveLimits::default() };
+        let limits = CarveLimits {
+            chunk_size: 256,
+            max_candidates: 5,
+            ..CarveLimits::default()
+        };
         assert!(carve_all(&Mem(disk), &limits).len() <= 5);
     }
 

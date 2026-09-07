@@ -10,11 +10,9 @@ pub mod normalize;
 pub mod validate;
 
 pub use normalize::{deduplicate, extents_overlap, normalize, normalize_name};
-pub use validate::{validate, validate_bytes, ValidationReport, VALIDATION_WINDOW};
+pub use validate::{VALIDATION_WINDOW, ValidationReport, validate, validate_bytes};
 
-use recovery_core::{
-    CancellationToken, Confidence, Evidence, FileCandidate, RecoveryResult,
-};
+use recovery_core::{CancellationToken, Confidence, Evidence, FileCandidate, RecoveryResult};
 use storage_io::BlockDevice;
 
 /// Runs the full pipeline over a raw candidate set.
@@ -115,7 +113,10 @@ pub fn group_by_confidence(candidates: &[FileCandidate]) -> Vec<(Confidence, Vec
     bands
         .into_iter()
         .map(|band| {
-            let members = candidates.iter().filter(|c| c.confidence() == band).collect();
+            let members = candidates
+                .iter()
+                .filter(|c| c.confidence() == band)
+                .collect();
             (band, members)
         })
         .filter(|(_, members): &(Confidence, Vec<&FileCandidate>)| !members.is_empty())
@@ -216,7 +217,13 @@ mod tests {
     fn validation_promotes_nothing_beyond_its_provenance() {
         let size = jpeg().len() as u64;
         // The same valid bytes, found by carving rather than a record.
-        let out = run_pipeline(vec![candidate("carved.jpg", 0, size, Origin::Carved, Complete)]);
+        let out = run_pipeline(vec![candidate(
+            "carved.jpg",
+            0,
+            size,
+            Origin::Carved,
+            Complete,
+        )]);
         assert_eq!(out[0].validation, Validation::Valid);
         // Provenance is not erased by a clean validation.
         assert_eq!(out[0].confidence(), Confidence::Low);
@@ -257,7 +264,9 @@ mod tests {
         assert_eq!(out.len(), 2);
         for c in &out {
             assert!(
-                c.evidence.iter().any(|e| !e.supporting && e.detail.contains("overlap")),
+                c.evidence
+                    .iter()
+                    .any(|e| !e.supporting && e.detail.contains("overlap")),
                 "both candidates must carry the contradiction"
             );
         }
@@ -274,10 +283,12 @@ mod tests {
             Origin::ActiveFilesystem,
             Complete,
         )]);
-        assert!(out[0]
-            .evidence
-            .iter()
-            .any(|e| !e.supporting && e.detail.contains("does not match")));
+        assert!(
+            out[0]
+                .evidence
+                .iter()
+                .any(|e| !e.supporting && e.detail.contains("does not match"))
+        );
         // The contradiction costs it the top band.
         assert_eq!(out[0].confidence(), Confidence::Medium);
     }
@@ -312,7 +323,13 @@ mod tests {
         token.cancel();
         let result = run(
             &device(),
-            vec![candidate("photo.jpg", 0, size, Origin::ActiveFilesystem, Complete)],
+            vec![candidate(
+                "photo.jpg",
+                0,
+                size,
+                Origin::ActiveFilesystem,
+                Complete,
+            )],
             &token,
         );
         assert!(result.is_err());
