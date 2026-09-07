@@ -51,25 +51,42 @@ impl DirectoryEntry {
     }
 }
 
-fn io_error(message: &str) -> RecoveryError { RecoveryError::IoFailure(message.into()) }
+fn io_error(message: &str) -> RecoveryError {
+    RecoveryError::IoFailure(message.into())
+}
 
-fn read_exact<D: BlockDevice>(device: &D, range: ByteRange, output: &mut [u8]) -> RecoveryResult<()> {
-    if u64::try_from(output.len()).map_err(|_| RecoveryError::LengthTooLarge { length: u64::MAX })? != range.length {
+fn read_exact<D: BlockDevice>(
+    device: &D,
+    range: ByteRange,
+    output: &mut [u8],
+) -> RecoveryResult<()> {
+    if u64::try_from(output.len())
+        .map_err(|_| RecoveryError::LengthTooLarge { length: u64::MAX })?
+        != range.length
+    {
         return Err(io_error("read buffer length mismatch"));
     }
     let n = device.read(range, output)?;
-    if n != output.len() { return Err(io_error("short FAT32 read")); }
+    if n != output.len() {
+        return Err(io_error("short FAT32 read"));
+    }
     Ok(())
 }
 
-fn volume_end(range: ByteRange) -> RecoveryResult<u64> { range.end() }
+fn volume_end(range: ByteRange) -> RecoveryResult<u64> {
+    range.end()
+}
 
 pub fn parse_volume<D: BlockDevice>(device: &D, range: ByteRange) -> RecoveryResult<Fat32Volume> {
     range.validate_within(device.capacity())?;
-    if range.length < 512 { return Err(io_error("FAT32 range smaller than boot sector")); }
+    if range.length < 512 {
+        return Err(io_error("FAT32 range smaller than boot sector"));
+    }
     let mut boot = [0u8; 512];
     read_exact(device, ByteRange::new(range.offset, 512)?, &mut boot)?;
-    if boot[510] != 0x55 || boot[511] != 0xAA { return Err(io_error("invalid FAT32 boot signature")); }
+    if boot[510] != 0x55 || boot[511] != 0xAA {
+        return Err(io_error("invalid FAT32 boot signature"));
+    }
 
     let bps = u64::from(u16::from_le_bytes([boot[11], boot[12]]));
     let spc = u64::from(boot[13]);
@@ -78,46 +95,93 @@ pub fn parse_volume<D: BlockDevice>(device: &D, range: ByteRange) -> RecoveryRes
     let root_entries = u16::from_le_bytes([boot[17], boot[18]]);
     let total16 = u64::from(u16::from_le_bytes([boot[19], boot[20]]));
     let fat16 = u64::from(u16::from_le_bytes([boot[22], boot[23]]));
-    let total32 = u64::from(u32::from_le_bytes(boot[32..36].try_into().map_err(|_| io_error("invalid boot sector"))?));
-    let fat_size = u64::from(u32::from_le_bytes(boot[36..40].try_into().map_err(|_| io_error("invalid boot sector"))?));
-    let root_cluster = u32::from_le_bytes(boot[44..48].try_into().map_err(|_| io_error("invalid boot sector"))?);
+    let total32 = u64::from(u32::from_le_bytes(
+        boot[32..36]
+            .try_into()
+            .map_err(|_| io_error("invalid boot sector"))?,
+    ));
+    let fat_size = u64::from(u32::from_le_bytes(
+        boot[36..40]
+            .try_into()
+            .map_err(|_| io_error("invalid boot sector"))?,
+    ));
+    let root_cluster = u32::from_le_bytes(
+        boot[44..48]
+            .try_into()
+            .map_err(|_| io_error("invalid boot sector"))?,
+    );
     let total = if total16 != 0 { total16 } else { total32 };
 
-    if !bps.is_power_of_two() || !(512..=4096).contains(&bps) || !spc.is_power_of_two() || spc == 0 ||
-       reserved == 0 || fats == 0 || root_entries != 0 || fat16 != 0 || fat_size == 0 || total == 0 || root_cluster < 2 {
+    if !bps.is_power_of_two()
+        || !(512..=4096).contains(&bps)
+        || !spc.is_power_of_two()
+        || spc == 0
+        || reserved == 0
+        || fats == 0
+        || root_entries != 0
+        || fat16 != 0
+        || fat_size == 0
+        || total == 0
+        || root_cluster < 2
+    {
         return Err(io_error("invalid FAT32 geometry"));
     }
 
-    let first_data_sector = reserved.checked_add(fats.checked_mul(fat_size).ok_or_else(|| io_error("FAT size overflow"))?)
+    let first_data_sector = reserved
+        .checked_add(
+            fats.checked_mul(fat_size)
+                .ok_or_else(|| io_error("FAT size overflow"))?,
+        )
         .ok_or_else(|| io_error("data offset overflow"))?;
-    if first_data_sector >= total { return Err(io_error("FAT32 data region outside volume")); }
+    if first_data_sector >= total {
+        return Err(io_error("FAT32 data region outside volume"));
+    }
     let clusters = (total - first_data_sector) / spc;
     if clusters == 0 || u64::from(root_cluster) >= clusters.saturating_add(2) {
         return Err(io_error("invalid FAT32 cluster geometry"));
     }
 
     let declared_bytes = total.checked_mul(bps).ok_or(RecoveryError::RangeOverflow)?;
-    if declared_bytes > range.length { return Err(io_error("FAT32 volume exceeds supplied range")); }
+    if declared_bytes > range.length {
+        return Err(io_error("FAT32 volume exceeds supplied range"));
+    }
 
     Ok(Fat32Volume {
-        bytes_per_sector: bps, sectors_per_cluster: spc, reserved_sectors: reserved,
-        fat_count: fats, sectors_per_fat: fat_size, first_data_sector, root_cluster, cluster_count: clusters
+        bytes_per_sector: bps,
+        sectors_per_cluster: spc,
+        reserved_sectors: reserved,
+        fat_count: fats,
+        sectors_per_fat: fat_size,
+        first_data_sector,
+        root_cluster,
+        cluster_count: clusters,
     })
 }
 
 impl Fat32Volume {
     pub fn cluster_size(&self) -> RecoveryResult<u64> {
-        self.bytes_per_sector.checked_mul(self.sectors_per_cluster).ok_or_else(|| io_error("cluster size overflow"))
+        self.bytes_per_sector
+            .checked_mul(self.sectors_per_cluster)
+            .ok_or_else(|| io_error("cluster size overflow"))
     }
 
     pub fn cluster_offset(&self, volume_start: u64, cluster: u32) -> RecoveryResult<u64> {
         if cluster < 2 || u64::from(cluster) >= self.cluster_count.saturating_add(2) {
             return Err(io_error("cluster outside FAT32 data region"));
         }
-        let sector_delta = u64::from(cluster - 2).checked_mul(self.sectors_per_cluster)
+        let sector_delta = u64::from(cluster - 2)
+            .checked_mul(self.sectors_per_cluster)
             .ok_or_else(|| io_error("cluster sector overflow"))?;
-        let sector = self.first_data_sector.checked_add(sector_delta).ok_or_else(|| io_error("cluster sector overflow"))?;
-        volume_start.checked_add(sector.checked_mul(self.bytes_per_sector).ok_or_else(|| io_error("cluster byte overflow"))?)
+        let sector = self
+            .first_data_sector
+            .checked_add(sector_delta)
+            .ok_or_else(|| io_error("cluster sector overflow"))?;
+        volume_start
+            .checked_add(
+                sector
+                    .checked_mul(self.bytes_per_sector)
+                    .ok_or_else(|| io_error("cluster byte overflow"))?,
+            )
             .ok_or_else(|| io_error("cluster offset overflow"))
     }
 
@@ -125,20 +189,40 @@ impl Fat32Volume {
         if cluster < 2 || u64::from(cluster) >= self.cluster_count.saturating_add(2) {
             return Err(io_error("cluster outside FAT32 data region"));
         }
-        let fat_base = self.reserved_sectors.checked_mul(self.bytes_per_sector).ok_or(RecoveryError::RangeOverflow)?;
-        let entry = u64::from(cluster).checked_mul(4).ok_or(RecoveryError::RangeOverflow)?;
-        volume_start.checked_add(fat_base).and_then(|v| v.checked_add(entry)).ok_or(RecoveryError::RangeOverflow)
+        let fat_base = self
+            .reserved_sectors
+            .checked_mul(self.bytes_per_sector)
+            .ok_or(RecoveryError::RangeOverflow)?;
+        let entry = u64::from(cluster)
+            .checked_mul(4)
+            .ok_or(RecoveryError::RangeOverflow)?;
+        volume_start
+            .checked_add(fat_base)
+            .and_then(|v| v.checked_add(entry))
+            .ok_or(RecoveryError::RangeOverflow)
     }
 
-    pub fn next_cluster<D: BlockDevice>(&self, device: &D, volume_range: ByteRange, cluster: u32) -> RecoveryResult<Option<u32>> {
+    pub fn next_cluster<D: BlockDevice>(
+        &self,
+        device: &D,
+        volume_range: ByteRange,
+        cluster: u32,
+    ) -> RecoveryResult<Option<u32>> {
         let offset = self.fat_offset(volume_range.offset, cluster)?;
         let end = offset.checked_add(4).ok_or(RecoveryError::RangeOverflow)?;
-        if end > volume_end(volume_range)? { return Err(io_error("FAT entry outside volume")); }
+        if end > volume_end(volume_range)? {
+            return Err(io_error("FAT entry outside volume"));
+        }
         let mut raw = [0u8; 4];
         read_exact(device, ByteRange::new(offset, 4)?, &mut raw)?;
         let value = u32::from_le_bytes(raw) & 0x0FFF_FFFF;
-        if value >= FAT32_EOC_MIN { return Ok(None); }
-        if value == FAT32_BAD_CLUSTER || value < 2 || u64::from(value) >= self.cluster_count.saturating_add(2) {
+        if value >= FAT32_EOC_MIN {
+            return Ok(None);
+        }
+        if value == FAT32_BAD_CLUSTER
+            || value < 2
+            || u64::from(value) >= self.cluster_count.saturating_add(2)
+        {
             return Err(io_error("invalid FAT32 cluster link"));
         }
         Ok(Some(value))
@@ -149,14 +233,23 @@ impl Fat32Volume {
     ///
     /// A damaged tail must not erase a recoverable head: the surviving prefix
     /// is the evidence a partial candidate is built from.
-    pub fn partial_cluster_chain<D: BlockDevice>(&self, device: &D, volume_range: ByteRange, start: u32) -> Vec<u32> {
-        if start < 2 { return Vec::new(); }
+    pub fn partial_cluster_chain<D: BlockDevice>(
+        &self,
+        device: &D,
+        volume_range: ByteRange,
+        start: u32,
+    ) -> Vec<u32> {
+        if start < 2 {
+            return Vec::new();
+        }
         let max = usize::try_from(self.cluster_count.min(1_000_000)).unwrap_or(usize::MAX);
         let mut chain = Vec::new();
         let mut seen = BTreeSet::new();
         let mut current = start;
         while chain.len() <= max {
-            if !seen.insert(current) { break; }
+            if !seen.insert(current) {
+                break;
+            }
             chain.push(current);
             match self.next_cluster(device, volume_range, current) {
                 Ok(Some(next)) => current = next,
@@ -168,14 +261,24 @@ impl Fat32Volume {
         chain
     }
 
-    pub fn cluster_chain<D: BlockDevice>(&self, device: &D, volume_range: ByteRange, start: u32) -> RecoveryResult<Vec<u32>> {
-        if start < 2 { return Err(io_error("invalid starting cluster")); }
-        let max = usize::try_from(self.cluster_count.min(1_000_000)).map_err(|_| io_error("cluster count too large"))?;
+    pub fn cluster_chain<D: BlockDevice>(
+        &self,
+        device: &D,
+        volume_range: ByteRange,
+        start: u32,
+    ) -> RecoveryResult<Vec<u32>> {
+        if start < 2 {
+            return Err(io_error("invalid starting cluster"));
+        }
+        let max = usize::try_from(self.cluster_count.min(1_000_000))
+            .map_err(|_| io_error("cluster count too large"))?;
         let mut chain = Vec::new();
         let mut seen = BTreeSet::new();
         let mut current = start;
         while chain.len() <= max {
-            if !seen.insert(current) { return Err(io_error("FAT32 cluster chain loop")); }
+            if !seen.insert(current) {
+                return Err(io_error("FAT32 cluster chain loop"));
+            }
             chain.push(current);
             match self.next_cluster(device, volume_range, current)? {
                 Some(next) => current = next,
@@ -185,7 +288,6 @@ impl Fat32Volume {
         Err(io_error("FAT32 cluster chain exceeds traversal limit"))
     }
 }
-
 
 /// How much of a file's content the extents are believed to represent.
 ///
@@ -247,7 +349,11 @@ pub fn file_extents<D: BlockDevice>(
         }
         return Ok(FileExtents {
             extents: Vec::new(),
-            state: if declared_size == 0 { ExtentState::Recoverable } else { ExtentState::MetadataOnly },
+            state: if declared_size == 0 {
+                ExtentState::Recoverable
+            } else {
+                ExtentState::MetadataOnly
+            },
             declared_size,
             recovered_size: 0,
             diagnostics,
@@ -257,7 +363,8 @@ pub fn file_extents<D: BlockDevice>(
     let cluster_size = volume.cluster_size()?;
     // Resolve the chain, keeping whatever prefix survived a failure so a broken
     // tail still yields a partial candidate.
-    let (chain, chain_error) = match volume.cluster_chain(device, volume_range, entry.first_cluster) {
+    let (chain, chain_error) = match volume.cluster_chain(device, volume_range, entry.first_cluster)
+    {
         Ok(chain) => (chain, None),
         Err(error) => (
             volume.partial_cluster_chain(device, volume_range, entry.first_cluster),
@@ -292,11 +399,14 @@ pub fn file_extents<D: BlockDevice>(
         // files produce a single run.
         match extents.last_mut() {
             Some(last) if last.source_range.end()? == offset => {
-                last.source_range = ByteRange::new(last.source_range.offset, last.source_range.length + length)?;
+                last.source_range =
+                    ByteRange::new(last.source_range.offset, last.source_range.length + length)?;
             }
             _ => extents.push(Extent::new(range, logical)?),
         }
-        logical = logical.checked_add(length).ok_or(RecoveryError::RangeOverflow)?;
+        logical = logical
+            .checked_add(length)
+            .ok_or(RecoveryError::RangeOverflow)?;
     }
 
     let recovered_size = recovery_core::total_length(&extents)?;
@@ -316,13 +426,25 @@ pub fn file_extents<D: BlockDevice>(
         ExtentState::Recoverable
     };
 
-    Ok(FileExtents { extents, state, declared_size, recovered_size, diagnostics })
+    Ok(FileExtents {
+        extents,
+        state,
+        declared_size,
+        recovered_size,
+        diagnostics,
+    })
 }
 
 fn short_name(entry: &[u8]) -> String {
     let base = String::from_utf8_lossy(&entry[0..8]).trim_end().to_string();
-    let ext = String::from_utf8_lossy(&entry[8..11]).trim_end().to_string();
-    if ext.is_empty() { base } else { format!("{base}.{ext}") }
+    let ext = String::from_utf8_lossy(&entry[8..11])
+        .trim_end()
+        .to_string();
+    if ext.is_empty() {
+        base
+    } else {
+        format!("{base}.{ext}")
+    }
 }
 
 /// Checksum of the raw 11-byte 8.3 name, per the FAT long-name specification.
@@ -429,7 +551,9 @@ impl LfnAssembler {
         }
         // Reject unpaired surrogates rather than substituting replacement chars.
         let name = String::from_utf16(units).ok()?;
-        if name.contains('\u{0}') { return None; }
+        if name.contains('\u{0}') {
+            return None;
+        }
         Some(name)
     }
 }
@@ -437,14 +561,20 @@ impl LfnAssembler {
 fn parse_directory_bytes(data: &[u8], include_deleted: bool, entries: &mut Vec<DirectoryEntry>) {
     let mut lfn = LfnAssembler::default();
     for raw in data.as_chunks::<DIR_ENTRY_SIZE>().0 {
-        if raw[0] == END_OF_DIRECTORY { break; }
+        if raw[0] == END_OF_DIRECTORY {
+            break;
+        }
         let deleted = raw[0] == DELETED;
         let attr = raw[11];
 
         if attr == LFN_ATTR {
             // A deleted long-name fragment cannot be tied to its short entry
             // with confidence, so it never contributes an assembled name.
-            if deleted { lfn.reset(); } else { lfn.push(raw); }
+            if deleted {
+                lfn.reset();
+            } else {
+                lfn.push(raw);
+            }
             continue;
         }
 
@@ -455,12 +585,17 @@ fn parse_directory_bytes(data: &[u8], include_deleted: bool, entries: &mut Vec<D
         }
 
         let long_name = lfn.take(raw);
-        if deleted && !include_deleted { continue; }
+        if deleted && !include_deleted {
+            continue;
+        }
         let high = u32::from(u16::from_le_bytes([raw[20], raw[21]]));
         let low = u32::from(u16::from_le_bytes([raw[26], raw[27]]));
         entries.push(DirectoryEntry {
-            short_name: short_name(raw), attributes: attr, first_cluster: (high << 16) | low,
-            size: u32::from_le_bytes([raw[28], raw[29], raw[30], raw[31]]), deleted,
+            short_name: short_name(raw),
+            attributes: attr,
+            first_cluster: (high << 16) | low,
+            size: u32::from_le_bytes([raw[28], raw[29], raw[30], raw[31]]),
+            deleted,
             long_name,
         });
     }
@@ -494,7 +629,12 @@ pub fn read_directory<D: BlockDevice>(
         data.resize(start + cluster_len, 0);
         read_exact(device, range, &mut data[start..])?;
         // Stop once the end-of-directory marker is present in this cluster.
-        if data[start..].as_chunks::<DIR_ENTRY_SIZE>().0.iter().any(|e| e[0] == END_OF_DIRECTORY) {
+        if data[start..]
+            .as_chunks::<DIR_ENTRY_SIZE>()
+            .0
+            .iter()
+            .any(|e| e[0] == END_OF_DIRECTORY)
+        {
             break;
         }
     }
@@ -504,9 +644,19 @@ pub fn read_directory<D: BlockDevice>(
     Ok(entries)
 }
 
-pub fn read_root_entries<D: BlockDevice>(device: &D, volume_range: ByteRange, include_deleted: bool) -> RecoveryResult<Vec<DirectoryEntry>> {
+pub fn read_root_entries<D: BlockDevice>(
+    device: &D,
+    volume_range: ByteRange,
+    include_deleted: bool,
+) -> RecoveryResult<Vec<DirectoryEntry>> {
     let volume = parse_volume(device, volume_range)?;
-    read_directory(device, &volume, volume_range, volume.root_cluster, include_deleted)
+    read_directory(
+        device,
+        &volume,
+        volume_range,
+        volume.root_cluster,
+        include_deleted,
+    )
 }
 
 /// A directory entry paired with its full path from the volume root.
@@ -538,7 +688,10 @@ pub struct WalkLimits {
 
 impl Default for WalkLimits {
     fn default() -> Self {
-        Self { max_depth: 64, max_entries: 100_000 }
+        Self {
+            max_depth: 64,
+            max_entries: 100_000,
+        }
     }
 }
 
@@ -563,7 +716,8 @@ pub fn walk<D: BlockDevice>(
 
     while let Some((cluster, prefix, depth)) = stack.pop() {
         cancel.check()?;
-        let entries = match read_directory(device, &volume, volume_range, cluster, include_deleted) {
+        let entries = match read_directory(device, &volume, volume_range, cluster, include_deleted)
+        {
             Ok(entries) => entries,
             // A damaged subdirectory must not discard the rest of the tree.
             Err(_) => continue,
@@ -583,7 +737,10 @@ pub fn walk<D: BlockDevice>(
             let first_cluster = entry.first_cluster;
             // A deleted directory's chain is not trustworthy, so do not descend.
             let descend = is_dir && !entry.deleted;
-            out.push(WalkedEntry { path: path.clone(), entry });
+            out.push(WalkedEntry {
+                path: path.clone(),
+                entry,
+            });
 
             if descend
                 && depth + 1 < limits.max_depth
@@ -603,12 +760,14 @@ mod tests {
 
     struct Mem(Vec<u8>);
     impl BlockDevice for Mem {
-        fn capacity(&self) -> u64 { self.0.len() as u64 }
+        fn capacity(&self) -> u64 {
+            self.0.len() as u64
+        }
         fn read(&self, r: ByteRange, o: &mut [u8]) -> RecoveryResult<usize> {
             r.validate_within(self.capacity())?;
             let n = usize::try_from(r.length).unwrap();
             let start = usize::try_from(r.offset).unwrap();
-            o[..n].copy_from_slice(&self.0[start..start+n]);
+            o[..n].copy_from_slice(&self.0[start..start + n]);
             Ok(n)
         }
     }
@@ -617,43 +776,66 @@ mod tests {
         let sectors = 66_000usize;
         let mut b = vec![0u8; 512 * sectors];
         b[11..13].copy_from_slice(&512u16.to_le_bytes());
-        b[13]=1; b[14..16].copy_from_slice(&32u16.to_le_bytes()); b[16]=2;
+        b[13] = 1;
+        b[14..16].copy_from_slice(&32u16.to_le_bytes());
+        b[16] = 2;
         b[32..36].copy_from_slice(&(sectors as u32).to_le_bytes());
-        b[36..40].copy_from_slice(&600u32.to_le_bytes()); b[44..48].copy_from_slice(&2u32.to_le_bytes());
-        b[510]=0x55; b[511]=0xAA;
+        b[36..40].copy_from_slice(&600u32.to_le_bytes());
+        b[44..48].copy_from_slice(&2u32.to_le_bytes());
+        b[510] = 0x55;
+        b[511] = 0xAA;
         let fat = 32 * 512;
         // cluster 2 -> 3, cluster 3 -> EOC
-        b[fat+8..fat+12].copy_from_slice(&3u32.to_le_bytes());
-        b[fat+12..fat+16].copy_from_slice(&0x0FFF_FFFFu32.to_le_bytes());
-        let root=(32+2*600)*512;
-        b[root..root+8].copy_from_slice(b"HELLO   "); b[root+8..root+11].copy_from_slice(b"TXT");
-        b[root+11]=0x20; b[root+26..root+28].copy_from_slice(&5u16.to_le_bytes()); b[root+28..root+32].copy_from_slice(&12u32.to_le_bytes());
+        b[fat + 8..fat + 12].copy_from_slice(&3u32.to_le_bytes());
+        b[fat + 12..fat + 16].copy_from_slice(&0x0FFF_FFFFu32.to_le_bytes());
+        let root = (32 + 2 * 600) * 512;
+        b[root..root + 8].copy_from_slice(b"HELLO   ");
+        b[root + 8..root + 11].copy_from_slice(b"TXT");
+        b[root + 11] = 0x20;
+        b[root + 26..root + 28].copy_from_slice(&5u16.to_le_bytes());
+        b[root + 28..root + 32].copy_from_slice(&12u32.to_le_bytes());
         // Keep the directory logically open across the cluster boundary. A zero
         // first byte is an end-of-directory marker, so use deleted slots for
         // the unused entries in the first cluster.
         for offset in (root + DIR_ENTRY_SIZE..root + 512).step_by(DIR_ENTRY_SIZE) {
             b[offset] = DELETED;
         }
-        let root2=root+512;
-        b[root2..root2+8].copy_from_slice(b"WORLD   "); b[root2+8..root2+11].copy_from_slice(b"BIN");
-        b[root2+11]=0x20; b[root2+26..root2+28].copy_from_slice(&6u16.to_le_bytes()); b[root2+28..root2+32].copy_from_slice(&8u32.to_le_bytes());
+        let root2 = root + 512;
+        b[root2..root2 + 8].copy_from_slice(b"WORLD   ");
+        b[root2 + 8..root2 + 11].copy_from_slice(b"BIN");
+        b[root2 + 11] = 0x20;
+        b[root2 + 26..root2 + 28].copy_from_slice(&6u16.to_le_bytes());
+        b[root2 + 28..root2 + 32].copy_from_slice(&8u32.to_le_bytes());
         Mem(b)
     }
 
-    #[test] fn parses_geometry() {
-        let m=image(); let v=parse_volume(&m,ByteRange::new(0,m.capacity()).unwrap()).unwrap();
-        assert_eq!(v.root_cluster,2); assert_eq!(v.cluster_size().unwrap(),512);
+    #[test]
+    fn parses_geometry() {
+        let m = image();
+        let v = parse_volume(&m, ByteRange::new(0, m.capacity()).unwrap()).unwrap();
+        assert_eq!(v.root_cluster, 2);
+        assert_eq!(v.cluster_size().unwrap(), 512);
     }
 
-    #[test] fn follows_root_cluster_chain() {
-        let m=image(); let e=read_root_entries(&m,ByteRange::new(0,m.capacity()).unwrap(),false).unwrap();
-        assert_eq!(e.len(),2); assert_eq!(e[0].short_name,"HELLO.TXT"); assert_eq!(e[1].short_name,"WORLD.BIN");
+    #[test]
+    fn follows_root_cluster_chain() {
+        let m = image();
+        let e = read_root_entries(&m, ByteRange::new(0, m.capacity()).unwrap(), false).unwrap();
+        assert_eq!(e.len(), 2);
+        assert_eq!(e[0].short_name, "HELLO.TXT");
+        assert_eq!(e[1].short_name, "WORLD.BIN");
     }
 
-    #[test] fn detects_chain_loop() {
-        let mut m=image(); let fat=32*512; m.0[fat+12..fat+16].copy_from_slice(&2u32.to_le_bytes());
-        let v=parse_volume(&m,ByteRange::new(0,m.capacity()).unwrap()).unwrap();
-        assert!(v.cluster_chain(&m,ByteRange::new(0,m.capacity()).unwrap(),2).is_err());
+    #[test]
+    fn detects_chain_loop() {
+        let mut m = image();
+        let fat = 32 * 512;
+        m.0[fat + 12..fat + 16].copy_from_slice(&2u32.to_le_bytes());
+        let v = parse_volume(&m, ByteRange::new(0, m.capacity()).unwrap()).unwrap();
+        assert!(
+            v.cluster_chain(&m, ByteRange::new(0, m.capacity()).unwrap(), 2)
+                .is_err()
+        );
     }
 
     /// Builds a long-name entry fragment for `order`, marking the final
@@ -664,8 +846,12 @@ mod tests {
         e[11] = LFN_ATTR;
         e[13] = checksum;
         let mut units = chars.to_vec();
-        while units.len() < LFN_CHARS_PER_ENTRY { units.push(0xFFFF); }
-        if chars.len() < LFN_CHARS_PER_ENTRY { units[chars.len()] = 0x0000; }
+        while units.len() < LFN_CHARS_PER_ENTRY {
+            units.push(0xFFFF);
+        }
+        if chars.len() < LFN_CHARS_PER_ENTRY {
+            units[chars.len()] = 0x0000;
+        }
         let mut i = 0;
         for (start, end) in LFN_CHAR_RANGES {
             for slot in e[start..end].as_chunks_mut::<2>().0 {
@@ -683,7 +869,9 @@ mod tests {
         e
     }
 
-    fn utf16(s: &str) -> Vec<u16> { s.encode_utf16().collect() }
+    fn utf16(s: &str) -> Vec<u16> {
+        s.encode_utf16().collect()
+    }
 
     fn parse(data: &[u8]) -> Vec<DirectoryEntry> {
         let mut out = Vec::new();
@@ -865,7 +1053,9 @@ mod tests {
         let mut m = image();
         // Root occupies clusters 2->3; truncate to cluster 2 alone for clarity.
         link(&mut m.0, 2, EOC);
-        for slot in 0..8 { put(&mut m.0, 2, slot, &[0u8; 32]); }
+        for slot in 0..8 {
+            put(&mut m.0, 2, slot, &[0u8; 32]);
+        }
         put(&mut m.0, 2, 0, &dir_entry(b"SUB        ", 4));
         link(&mut m.0, 4, EOC);
         put(&mut m.0, 4, 0, &short_entry(b"INNER   TXT"));
@@ -873,13 +1063,22 @@ mod tests {
     }
 
     fn walk_all(m: &Mem) -> Vec<WalkedEntry> {
-        walk(m, ByteRange::new(0, m.capacity()).unwrap(), false,
-             WalkLimits::default(), &CancellationToken::default()).unwrap()
+        walk(
+            m,
+            ByteRange::new(0, m.capacity()).unwrap(),
+            false,
+            WalkLimits::default(),
+            &CancellationToken::default(),
+        )
+        .unwrap()
     }
 
     #[test]
     fn walks_into_subdirectories() {
-        let paths: Vec<String> = walk_all(&tree_image()).iter().map(|e| e.display_path()).collect();
+        let paths: Vec<String> = walk_all(&tree_image())
+            .iter()
+            .map(|e| e.display_path())
+            .collect();
         assert!(paths.contains(&"SUB".to_string()), "{paths:?}");
         assert!(paths.contains(&"SUB/INNER.TXT".to_string()), "{paths:?}");
     }
@@ -892,7 +1091,11 @@ mod tests {
         let entries = walk_all(&m);
         assert!(entries.iter().any(|e| e.display_path() == "SUB/LOOP"));
         // LOOP is never descended into, so no deeper path exists.
-        assert!(!entries.iter().any(|e| e.display_path().starts_with("SUB/LOOP/")));
+        assert!(
+            !entries
+                .iter()
+                .any(|e| e.display_path().starts_with("SUB/LOOP/"))
+        );
     }
 
     #[test]
@@ -901,15 +1104,27 @@ mod tests {
         put(&mut m.0, 4, 1, &dir_entry(b".          ", 4));
         put(&mut m.0, 4, 2, &dir_entry(b"..         ", 2));
         let entries = walk_all(&m);
-        assert!(!entries.iter().any(|e| e.path.last().unwrap() == "." || e.path.last().unwrap() == ".."));
+        assert!(
+            !entries
+                .iter()
+                .any(|e| e.path.last().unwrap() == "." || e.path.last().unwrap() == "..")
+        );
     }
 
     #[test]
     fn walk_respects_depth_limit() {
         let m = tree_image();
-        let entries = walk(&m, ByteRange::new(0, m.capacity()).unwrap(), false,
-                           WalkLimits { max_depth: 1, ..WalkLimits::default() },
-                           &CancellationToken::default()).unwrap();
+        let entries = walk(
+            &m,
+            ByteRange::new(0, m.capacity()).unwrap(),
+            false,
+            WalkLimits {
+                max_depth: 1,
+                ..WalkLimits::default()
+            },
+            &CancellationToken::default(),
+        )
+        .unwrap();
         // Depth 1 yields SUB but never descends into it.
         assert!(entries.iter().any(|e| e.display_path() == "SUB"));
         assert!(!entries.iter().any(|e| e.display_path() == "SUB/INNER.TXT"));
@@ -918,9 +1133,17 @@ mod tests {
     #[test]
     fn walk_respects_entry_limit() {
         let m = tree_image();
-        let entries = walk(&m, ByteRange::new(0, m.capacity()).unwrap(), false,
-                           WalkLimits { max_entries: 1, ..WalkLimits::default() },
-                           &CancellationToken::default()).unwrap();
+        let entries = walk(
+            &m,
+            ByteRange::new(0, m.capacity()).unwrap(),
+            false,
+            WalkLimits {
+                max_entries: 1,
+                ..WalkLimits::default()
+            },
+            &CancellationToken::default(),
+        )
+        .unwrap();
         assert_eq!(entries.len(), 1);
     }
 
@@ -929,8 +1152,13 @@ mod tests {
         let m = tree_image();
         let token = CancellationToken::default();
         token.cancel();
-        let result = walk(&m, ByteRange::new(0, m.capacity()).unwrap(), false,
-                          WalkLimits::default(), &token);
+        let result = walk(
+            &m,
+            ByteRange::new(0, m.capacity()).unwrap(),
+            false,
+            WalkLimits::default(),
+            &token,
+        );
         assert_eq!(result, Err(RecoveryError::Cancelled));
     }
 
@@ -940,8 +1168,14 @@ mod tests {
         let mut deleted = dir_entry(b"SUB        ", 4);
         deleted[0] = DELETED;
         put(&mut m.0, 2, 0, &deleted);
-        let entries = walk(&m, ByteRange::new(0, m.capacity()).unwrap(), true,
-                           WalkLimits::default(), &CancellationToken::default()).unwrap();
+        let entries = walk(
+            &m,
+            ByteRange::new(0, m.capacity()).unwrap(),
+            true,
+            WalkLimits::default(),
+            &CancellationToken::default(),
+        )
+        .unwrap();
         // The deleted directory is reported, but its chain is not trusted.
         assert!(entries.iter().any(|e| e.entry.deleted));
         assert!(!entries.iter().any(|e| e.display_path().contains('/')));
@@ -956,14 +1190,22 @@ mod tests {
         let full = "A Very Long File Name.txt";
         let u = utf16(full);
         // Fill cluster 2 with real entries; a zero slot would mean end-of-directory.
-        for slot in 0..15 { put(&mut m.0, 2, slot, &short_entry(b"FILLER  TXT")); }
-        for slot in 0..16 { put(&mut m.0, 3, slot, &[0u8; 32]); }
+        for slot in 0..15 {
+            put(&mut m.0, 2, slot, &short_entry(b"FILLER  TXT"));
+        }
+        for slot in 0..16 {
+            put(&mut m.0, 3, slot, &[0u8; 32]);
+        }
         // Last fragment ends cluster 2; the rest continues in cluster 3.
         put(&mut m.0, 2, 15, &lfn_entry(2, true, sum, &u[13..]));
         put(&mut m.0, 3, 0, &lfn_entry(1, false, sum, &u[..13]));
         put(&mut m.0, 3, 1, &short_entry(name));
-        let entries = read_root_entries(&m, ByteRange::new(0, m.capacity()).unwrap(), false).unwrap();
-        let named = entries.iter().find(|e| e.long_name.is_some()).expect("long name assembled");
+        let entries =
+            read_root_entries(&m, ByteRange::new(0, m.capacity()).unwrap(), false).unwrap();
+        let named = entries
+            .iter()
+            .find(|e| e.long_name.is_some())
+            .expect("long name assembled");
         assert_eq!(named.long_name.as_deref(), Some(full));
         assert_eq!(named.short_name, "LONGNA~1.TXT");
     }
@@ -975,13 +1217,19 @@ mod tests {
 
     fn file(first_cluster: u32, size: u32) -> DirectoryEntry {
         DirectoryEntry {
-            short_name: "F.BIN".into(), attributes: 0x20, first_cluster,
-            size, deleted: false, long_name: None,
+            short_name: "F.BIN".into(),
+            attributes: 0x20,
+            first_cluster,
+            size,
+            deleted: false,
+            long_name: None,
         }
     }
 
     /// Byte offset of cluster N in the test image.
-    fn cluster_at(n: u32) -> u64 { ((32 + 2 * 600) * 512 + (n as usize - 2) * 512) as u64 }
+    fn cluster_at(n: u32) -> u64 {
+        ((32 + 2 * 600) * 512 + (n as usize - 2) * 512) as u64
+    }
 
     #[test]
     fn contiguous_file_yields_one_coalesced_extent() {
@@ -1052,7 +1300,11 @@ mod tests {
         assert_eq!(fx.state, ExtentState::PartiallyRecoverable);
         // A damaged tail must not discard the valid prefix.
         assert_eq!(fx.recovered_size, 1024);
-        assert!(fx.diagnostics.iter().any(|d| d.contains("did not resolve cleanly")));
+        assert!(
+            fx.diagnostics
+                .iter()
+                .any(|d| d.contains("did not resolve cleanly"))
+        );
     }
 
     #[test]

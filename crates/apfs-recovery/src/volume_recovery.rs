@@ -1,7 +1,10 @@
 use recovery_core::{ByteRange, RecoveryResult};
 use storage_io::BlockDevice;
 
-use crate::{read_volume_filesystem_index, recover_regular_files, for_each_regular_file_chunk, ApfsContainer, ApfsDiscoveredVolume, ApfsRecoveredFile, ApfsRecoveredFileHeader};
+use crate::{
+    ApfsContainer, ApfsDiscoveredVolume, ApfsRecoveredFile, ApfsRecoveredFileHeader,
+    for_each_regular_file_chunk, read_volume_filesystem_index, recover_regular_files,
+};
 
 /// Build the catalog index and recover regular files from one discovered APFS volume.
 ///
@@ -15,13 +18,8 @@ pub fn recover_discovered_volume_files<D: BlockDevice>(
     container: &ApfsContainer,
     discovered: &ApfsDiscoveredVolume,
 ) -> RecoveryResult<Vec<ApfsRecoveredFile>> {
-    let index = read_volume_filesystem_index(
-        device,
-        range,
-        container,
-        &discovered.volume,
-        discovered.xid,
-    )?;
+    let index =
+        read_volume_filesystem_index(device, range, container, &discovered.volume, discovered.xid)?;
     recover_regular_files(&index, device, range, container.block_size)
 }
 
@@ -49,13 +47,8 @@ where
         ));
     }
 
-    let index = read_volume_filesystem_index(
-        device,
-        range,
-        container,
-        &discovered.volume,
-        discovered.xid,
-    )?;
+    let index =
+        read_volume_filesystem_index(device, range, container, &discovered.volume, discovered.xid)?;
     for_each_regular_file_chunk(
         &index,
         device,
@@ -87,7 +80,11 @@ mod tests {
             extentref_tree_oid: 0,
             snap_meta_tree_oid: 0,
         };
-        let discovered = ApfsDiscoveredVolume { object_id: 9, xid: 10, volume };
+        let discovered = ApfsDiscoveredVolume {
+            object_id: 9,
+            xid: 10,
+            volume,
+        };
         assert_eq!(discovered.xid, 10);
         assert_eq!(discovered.object_id, 9);
     }

@@ -1,7 +1,10 @@
 use recovery_core::{ByteRange, RecoveryResult};
 use storage_io::BlockDevice;
 
-use crate::{discover_volumes, for_each_regular_file, for_each_regular_file_chunk, ApfsRecoveredFile, ApfsRecoveredFileHeader};
+use crate::{
+    ApfsRecoveredFile, ApfsRecoveredFileHeader, discover_volumes, for_each_regular_file,
+    for_each_regular_file_chunk,
+};
 
 /// Recover regular files from every live APFS volume discovered from the
 /// newest valid container checkpoint.

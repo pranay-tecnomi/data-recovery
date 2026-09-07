@@ -19,7 +19,10 @@ impl Extent {
         logical_offset
             .checked_add(source_range.length)
             .ok_or(RecoveryError::RangeOverflow)?;
-        Ok(Self { source_range, logical_offset })
+        Ok(Self {
+            source_range,
+            logical_offset,
+        })
     }
 
     pub fn length(&self) -> u64 {

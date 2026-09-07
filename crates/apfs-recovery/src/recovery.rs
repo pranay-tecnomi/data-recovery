@@ -1,7 +1,7 @@
 use recovery_core::{ByteRange, RecoveryResult};
 use storage_io::BlockDevice;
 
-use crate::{for_each_file_extent_chunk, ApfsDirectoryEntry, ApfsFilesystemIndex, ApfsXattr};
+use crate::{ApfsDirectoryEntry, ApfsFilesystemIndex, ApfsXattr, for_each_file_extent_chunk};
 
 const S_IFMT: u16 = 0o170000;
 const S_IFREG: u16 = 0o100000;
@@ -36,13 +36,23 @@ fn recover_xattrs<D: BlockDevice>(
     container_range: ByteRange,
     block_size: u32,
 ) -> RecoveryResult<Vec<ApfsRecoveredXattr>> {
-    index.xattrs_for_entry(entry).iter().map(|xattr: &ApfsXattr| {
-        Ok(ApfsRecoveredXattr {
-            name: xattr.name.clone(),
-            flags: xattr.flags,
-            data: crate::read_xattr_data(device, container_range, block_size, xattr, &index.extents)?,
+    index
+        .xattrs_for_entry(entry)
+        .iter()
+        .map(|xattr: &ApfsXattr| {
+            Ok(ApfsRecoveredXattr {
+                name: xattr.name.clone(),
+                flags: xattr.flags,
+                data: crate::read_xattr_data(
+                    device,
+                    container_range,
+                    block_size,
+                    xattr,
+                    &index.extents,
+                )?,
+            })
         })
-    }).collect()
+        .collect()
 }
 
 fn regular_file_metadata<D: BlockDevice>(
@@ -88,19 +98,30 @@ where
     F: FnMut(&ApfsRecoveredFileHeader, u64, &[u8]) -> RecoveryResult<()>,
 {
     if chunk_size == 0 {
-        return Err(recovery_core::RecoveryError::IoFailure("invalid APFS file chunk size".into()));
+        return Err(recovery_core::RecoveryError::IoFailure(
+            "invalid APFS file chunk size".into(),
+        ));
     }
 
     for entry in &index.directories {
-        let Some(header) = regular_file_metadata(index, entry, device, container_range, block_size)? else {
+        let Some(header) =
+            regular_file_metadata(index, entry, device, container_range, block_size)?
+        else {
             continue;
         };
         if header.size == 0 {
             visit(&header, 0, &[])?;
             continue;
         }
-        let inode = index.inodes.get(&entry.file_id).expect("validated regular-file metadata");
-        let extents = index.extents.get(&inode.private_id).map(Vec::as_slice).unwrap_or(&[]);
+        let inode = index
+            .inodes
+            .get(&entry.file_id)
+            .expect("validated regular-file metadata");
+        let extents = index
+            .extents
+            .get(&inode.private_id)
+            .map(Vec::as_slice)
+            .unwrap_or(&[]);
         let mut next_logical = 0u64;
         for_each_file_extent_chunk(
             device,
@@ -120,7 +141,9 @@ where
                     }
                 }
                 visit(&header, offset, chunk)?;
-                next_logical = offset.checked_add(chunk.len() as u64).ok_or(recovery_core::RecoveryError::RangeOverflow)?;
+                next_logical = offset
+                    .checked_add(chunk.len() as u64)
+                    .ok_or(recovery_core::RecoveryError::RangeOverflow)?;
                 Ok(())
             },
         )?;
@@ -164,7 +187,12 @@ where
         let data = index.read_entry_data(device, container_range, block_size, entry)?;
         let xattrs = recover_xattrs(index, entry, device, container_range, block_size)?;
         debug_assert_eq!(data.len() as u64, size);
-        visit(ApfsRecoveredFile { path, size, data, xattrs })?;
+        visit(ApfsRecoveredFile {
+            path,
+            size,
+            data,
+            xattrs,
+        })?;
     }
     Ok(())
 }
@@ -213,7 +241,10 @@ mod tests {
 
     #[test]
     fn rejects_zero_chunk_size() {
-        let result = for_each_regular_file_chunk::<_, fn(&ApfsRecoveredFileHeader, u64, &[u8]) -> RecoveryResult<()>>(
+        let result = for_each_regular_file_chunk::<
+            _,
+            fn(&ApfsRecoveredFileHeader, u64, &[u8]) -> RecoveryResult<()>,
+        >(
             &ApfsFilesystemIndex {
                 directories: Vec::new(),
                 inodes: std::collections::BTreeMap::new(),
@@ -231,7 +262,11 @@ mod tests {
 
     struct EmptyDevice;
     impl BlockDevice for EmptyDevice {
-        fn capacity(&self) -> u64 { 0 }
-        fn read(&self, _range: ByteRange, _output: &mut [u8]) -> RecoveryResult<usize> { Ok(0) }
+        fn capacity(&self) -> u64 {
+            0
+        }
+        fn read(&self, _range: ByteRange, _output: &mut [u8]) -> RecoveryResult<usize> {
+            Ok(0)
+        }
     }
 }

@@ -7,16 +7,18 @@ use recovery_core::{RecoveryError, RecoveryResult};
 /// object bytes are interpreted as little-endian 32-bit words and accumulated
 /// modulo 0xffffffff.
 pub fn fletcher64(data: &[u8]) -> RecoveryResult<u64> {
-    if data.len() < 8 || data.len() % 4 != 0 {
-        return Err(RecoveryError::LengthTooLarge { length: data.len() as u64 });
+    if data.len() < 8 || !data.len().is_multiple_of(4) {
+        return Err(RecoveryError::LengthTooLarge {
+            length: data.len() as u64,
+        });
     }
 
     const MODULUS: u64 = 0xffff_ffff;
     let mut sum1 = 0u64;
     let mut sum2 = 0u64;
 
-    for word in data[8..].chunks_exact(4) {
-        let value = u32::from_le_bytes(word.try_into().expect("exact APFS checksum word")) as u64;
+    for word in data[8..].as_chunks::<4>().0 {
+        let value = u32::from_le_bytes(*word) as u64;
         sum1 += value;
         sum2 += sum1;
     }
@@ -31,7 +33,9 @@ pub fn fletcher64(data: &[u8]) -> RecoveryResult<u64> {
 /// Verify the Fletcher-64 checksum stored in an APFS object header.
 pub fn verify_fletcher64(data: &[u8]) -> RecoveryResult<()> {
     if data.len() < 8 {
-        return Err(RecoveryError::LengthTooLarge { length: data.len() as u64 });
+        return Err(RecoveryError::LengthTooLarge {
+            length: data.len() as u64,
+        });
     }
     let stored = u64::from_le_bytes(data[..8].try_into().expect("validated APFS checksum"));
     let computed = fletcher64(data)?;

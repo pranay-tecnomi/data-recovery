@@ -1,7 +1,7 @@
 use recovery_core::{ByteRange, RecoveryError, RecoveryResult};
 use storage_io::BlockDevice;
 
-use crate::{for_each_file_extent_chunk, ApfsDirectoryEntry, ApfsFilesystemIndex};
+use crate::{ApfsDirectoryEntry, ApfsFilesystemIndex, for_each_file_extent_chunk};
 
 const S_IFMT: u16 = 0o170000;
 const S_IFLNK: u16 = 0o120000;
@@ -23,11 +23,18 @@ fn read_symlink_target<D: BlockDevice>(
     container_range: ByteRange,
     block_size: u32,
 ) -> RecoveryResult<Vec<u8>> {
-    let inode = index.inodes.get(&entry.file_id)
+    let inode = index
+        .inodes
+        .get(&entry.file_id)
         .ok_or_else(|| RecoveryError::IoFailure("APFS symlink has no inode record".into()))?;
-    let size = inode.data_stream_size
+    let size = inode
+        .data_stream_size
         .ok_or_else(|| RecoveryError::IoFailure("APFS symlink has no DSTREAM size".into()))?;
-    let extents = index.extents.get(&inode.private_id).map(Vec::as_slice).unwrap_or(&[]);
+    let extents = index
+        .extents
+        .get(&inode.private_id)
+        .map(Vec::as_slice)
+        .unwrap_or(&[]);
     let mut data = Vec::new();
     for_each_file_extent_chunk(
         device,
@@ -42,7 +49,9 @@ fn read_symlink_target<D: BlockDevice>(
         },
     )?;
     if data.len() as u64 != size {
-        return Err(RecoveryError::IoFailure("APFS symlink data length mismatch".into()));
+        return Err(RecoveryError::IoFailure(
+            "APFS symlink data length mismatch".into(),
+        ));
     }
     Ok(data)
 }
@@ -60,20 +69,39 @@ pub fn recover_symlinks<D: BlockDevice>(
 ) -> RecoveryResult<Vec<ApfsRecoveredSymlink>> {
     let mut links = Vec::new();
     for entry in &index.directories {
-        let Some(inode) = index.inodes.get(&entry.file_id) else { continue; };
-        if inode.mode & S_IFMT != S_IFLNK { continue; }
+        let Some(inode) = index.inodes.get(&entry.file_id) else {
+            continue;
+        };
+        if inode.mode & S_IFMT != S_IFLNK {
+            continue;
+        }
         let path = index.path_for_entry(entry)?;
         let target_bytes = read_symlink_target(index, entry, device, container_range, block_size)?;
-        let target = String::from_utf8(target_bytes)
-            .map_err(|_| RecoveryError::IoFailure("APFS symlink target is not valid UTF-8".into()))?;
-        let xattrs = index.xattrs_for_entry(entry).iter().map(|xattr| {
-            Ok(crate::ApfsRecoveredXattr {
-                name: xattr.name.clone(),
-                flags: xattr.flags,
-                data: crate::read_xattr_data(device, container_range, block_size, xattr, &index.extents)?,
+        let target = String::from_utf8(target_bytes).map_err(|_| {
+            RecoveryError::IoFailure("APFS symlink target is not valid UTF-8".into())
+        })?;
+        let xattrs = index
+            .xattrs_for_entry(entry)
+            .iter()
+            .map(|xattr| {
+                Ok(crate::ApfsRecoveredXattr {
+                    name: xattr.name.clone(),
+                    flags: xattr.flags,
+                    data: crate::read_xattr_data(
+                        device,
+                        container_range,
+                        block_size,
+                        xattr,
+                        &index.extents,
+                    )?,
+                })
             })
-        }).collect::<RecoveryResult<Vec<_>>>()?;
-        links.push(ApfsRecoveredSymlink { path, target, xattrs });
+            .collect::<RecoveryResult<Vec<_>>>()?;
+        links.push(ApfsRecoveredSymlink {
+            path,
+            target,
+            xattrs,
+        });
     }
     Ok(links)
 }

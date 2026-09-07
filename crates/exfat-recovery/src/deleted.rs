@@ -12,34 +12,54 @@ const DELETED_NAME: u8 = 0x41;
 /// types, but otherwise retains the directory metadata. This parser accepts
 /// only the inactive forms and preserves the existing entry representation;
 /// callers must treat the returned records as deleted candidates.
-pub fn parse_deleted_directory_entry_set(entries: &[[u8; 32]]) -> RecoveryResult<ExFatDirectoryEntry> {
-    let primary = entries.first().ok_or_else(|| RecoveryError::IoFailure("empty deleted exFAT entry set".into()))?;
+pub fn parse_deleted_directory_entry_set(
+    entries: &[[u8; 32]],
+) -> RecoveryResult<ExFatDirectoryEntry> {
+    let primary = entries
+        .first()
+        .ok_or_else(|| RecoveryError::IoFailure("empty deleted exFAT entry set".into()))?;
     if primary[0] != DELETED_FILE {
-        return Err(RecoveryError::IoFailure("exFAT entry set is not a deleted file entry".into()));
+        return Err(RecoveryError::IoFailure(
+            "exFAT entry set is not a deleted file entry".into(),
+        ));
     }
     let secondary = usize::from(primary[1]);
-    if entries.len() != secondary.checked_add(1).ok_or(RecoveryError::RangeOverflow)? {
-        return Err(RecoveryError::IoFailure("deleted exFAT secondary entry count mismatch".into()));
+    if entries.len()
+        != secondary
+            .checked_add(1)
+            .ok_or(RecoveryError::RangeOverflow)?
+    {
+        return Err(RecoveryError::IoFailure(
+            "deleted exFAT secondary entry count mismatch".into(),
+        ));
     }
     if entries.len() < 2 || entries[1][0] != DELETED_STREAM {
-        return Err(RecoveryError::IoFailure("deleted exFAT file entry set missing stream extension".into()));
+        return Err(RecoveryError::IoFailure(
+            "deleted exFAT file entry set missing stream extension".into(),
+        ));
     }
 
     let stream = &entries[1];
     let name_len = usize::from(stream[3]);
     let required_names = name_len.div_ceil(15);
     if secondary != 1 + required_names {
-        return Err(RecoveryError::IoFailure("deleted exFAT filename secondary count mismatch".into()));
+        return Err(RecoveryError::IoFailure(
+            "deleted exFAT filename secondary count mismatch".into(),
+        ));
     }
 
     let mut units = Vec::with_capacity(name_len);
     for i in 0..required_names {
         let entry = &entries[2 + i];
         if entry[0] != DELETED_NAME {
-            return Err(RecoveryError::IoFailure("deleted exFAT filename entry missing or out of order".into()));
+            return Err(RecoveryError::IoFailure(
+                "deleted exFAT filename entry missing or out of order".into(),
+            ));
         }
         for j in 0..15 {
-            if units.len() == name_len { break; }
+            if units.len() == name_len {
+                break;
+            }
             let p = 2 + j * 2;
             units.push(u16::from_le_bytes([entry[p], entry[p + 1]]));
         }
@@ -48,14 +68,18 @@ pub fn parse_deleted_directory_entry_set(entries: &[[u8; 32]]) -> RecoveryResult
     let name = String::from_utf16(&units)
         .map_err(|_| RecoveryError::IoFailure("invalid UTF-16 deleted exFAT filename".into()))?;
     if name.is_empty() {
-        return Err(RecoveryError::IoFailure("empty deleted exFAT filename".into()));
+        return Err(RecoveryError::IoFailure(
+            "empty deleted exFAT filename".into(),
+        ));
     }
 
     let attributes = u16::from_le_bytes([primary[4], primary[5]]);
     let first_cluster = u32::from_le_bytes(stream[20..24].try_into().expect("fixed slice"));
     let data_length = u64::from_le_bytes(stream[24..32].try_into().expect("fixed slice"));
     if data_length > 0 && first_cluster < 2 {
-        return Err(RecoveryError::IoFailure("deleted non-empty exFAT file has invalid first cluster".into()));
+        return Err(RecoveryError::IoFailure(
+            "deleted non-empty exFAT file has invalid first cluster".into(),
+        ));
     }
 
     Ok(ExFatDirectoryEntry {
@@ -69,19 +93,31 @@ pub fn parse_deleted_directory_entry_set(entries: &[[u8; 32]]) -> RecoveryResult
 
 pub fn parse_deleted_directory_entries(bytes: &[u8]) -> RecoveryResult<Vec<ExFatDirectoryEntry>> {
     if !bytes.len().is_multiple_of(32) {
-        return Err(RecoveryError::IoFailure("exFAT deleted directory buffer is not entry-aligned".into()));
+        return Err(RecoveryError::IoFailure(
+            "exFAT deleted directory buffer is not entry-aligned".into(),
+        ));
     }
     let mut out = Vec::new();
     let mut i = 0;
     while i < bytes.len() {
         let mut raw = [0u8; 32];
         raw.copy_from_slice(&bytes[i..i + 32]);
-        if raw[0] == 0x00 { break; }
+        if raw[0] == 0x00 {
+            break;
+        }
         if raw[0] == DELETED_FILE {
             let count = usize::from(raw[1]);
-            let end = i.checked_add((count + 1).checked_mul(32).ok_or(RecoveryError::RangeOverflow)?).ok_or(RecoveryError::RangeOverflow)?;
+            let end = i
+                .checked_add(
+                    (count + 1)
+                        .checked_mul(32)
+                        .ok_or(RecoveryError::RangeOverflow)?,
+                )
+                .ok_or(RecoveryError::RangeOverflow)?;
             if end > bytes.len() {
-                return Err(RecoveryError::IoFailure("truncated deleted exFAT file entry set".into()));
+                return Err(RecoveryError::IoFailure(
+                    "truncated deleted exFAT file entry set".into(),
+                ));
             }
             let mut set = Vec::with_capacity(count + 1);
             for chunk in bytes[i..end].as_chunks::<32>().0 {
@@ -141,7 +177,9 @@ mod tests {
     #[test]
     fn rejects_truncated_deleted_set() {
         let mut bytes = Vec::new();
-        for entry in &deleted_set("old.txt") { bytes.extend_from_slice(entry); }
+        for entry in &deleted_set("old.txt") {
+            bytes.extend_from_slice(entry);
+        }
         assert!(parse_deleted_directory_entries(&bytes[..64]).is_err());
     }
 }

@@ -6,8 +6,8 @@ mod mbr;
 use recovery_core::{ByteRange, RecoveryError, RecoveryResult};
 use storage_io::BlockDevice;
 
-pub use gpt::{discover_gpt, parse_gpt_header, GptHeader};
-pub use mbr::{discover_mbr, MbrEntry};
+pub use gpt::{GptHeader, discover_gpt, parse_gpt_header};
+pub use mbr::{MbrEntry, discover_mbr};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct DiskGeometry {
@@ -17,9 +17,13 @@ pub struct DiskGeometry {
 impl DiskGeometry {
     pub fn new(logical_sector_size: u64) -> RecoveryResult<Self> {
         if logical_sector_size < 512 {
-            return Err(RecoveryError::IoFailure("logical sector size below MBR minimum".into()));
+            return Err(RecoveryError::IoFailure(
+                "logical sector size below MBR minimum".into(),
+            ));
         }
-        Ok(Self { logical_sector_size })
+        Ok(Self {
+            logical_sector_size,
+        })
     }
 }
 
@@ -56,17 +60,27 @@ pub fn detect_overlaps(result: &mut DiscoveryResult) {
         if let Ok(end) = left.range.end()
             && end > right.range.offset
         {
-            result.diagnostics.push(Diagnostic::Overlap { left: left.index, right: right.index });
+            result.diagnostics.push(Diagnostic::Overlap {
+                left: left.index,
+                right: right.index,
+            });
         }
     }
 }
 
-pub fn read_exact_at<D: BlockDevice>(device: &D, offset: u64, output: &mut [u8]) -> RecoveryResult<()> {
-    let length = u64::try_from(output.len()).map_err(|_| RecoveryError::LengthTooLarge { length: u64::MAX })?;
+pub fn read_exact_at<D: BlockDevice>(
+    device: &D,
+    offset: u64,
+    output: &mut [u8],
+) -> RecoveryResult<()> {
+    let length = u64::try_from(output.len())
+        .map_err(|_| RecoveryError::LengthTooLarge { length: u64::MAX })?;
     let range = ByteRange::new(offset, length)?;
     let read = device.read(range, output)?;
     if read != output.len() {
-        return Err(RecoveryError::IoFailure("short read while exact read required".into()));
+        return Err(RecoveryError::IoFailure(
+            "short read while exact read required".into(),
+        ));
     }
     Ok(())
 }

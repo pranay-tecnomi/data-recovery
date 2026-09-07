@@ -1,7 +1,9 @@
 use recovery_core::{ByteRange, RecoveryError, RecoveryResult};
 use storage_io::BlockDevice;
 
-use crate::{parse_container_superblock, parse_object_header, read_object, verify_fletcher64, ApfsContainer};
+use crate::{
+    ApfsContainer, parse_container_superblock, parse_object_header, read_object, verify_fletcher64,
+};
 
 const NX_SUPERBLOCK_TYPE: u32 = 0x0000_0001;
 const XP_DESC_FRAGMENTED: u32 = 0x8000_0000;
@@ -12,11 +14,19 @@ const NX_XP_DESC_INDEX: usize = 0x88;
 const NX_XP_DESC_LEN: usize = 0x8c;
 
 fn u32_at(block: &[u8], offset: usize) -> u32 {
-    u32::from_le_bytes(block[offset..offset + 4].try_into().expect("fixed APFS integer"))
+    u32::from_le_bytes(
+        block[offset..offset + 4]
+            .try_into()
+            .expect("fixed APFS integer"),
+    )
 }
 
 fn u64_at(block: &[u8], offset: usize) -> u64 {
-    u64::from_le_bytes(block[offset..offset + 8].try_into().expect("fixed APFS integer"))
+    u64::from_le_bytes(
+        block[offset..offset + 8]
+            .try_into()
+            .expect("fixed APFS integer"),
+    )
 }
 
 /// Locate the newest valid container superblock and return its physical block
@@ -32,16 +42,22 @@ pub(crate) fn read_latest_container_superblock_with_block<D: BlockDevice>(
     let mut initial = vec![0u8; initial_len];
     let initial_range = ByteRange::new(range.offset, initial_len as u64)?;
     if device.read(initial_range, &mut initial)? != initial.len() {
-        return Err(RecoveryError::IoFailure("short APFS container superblock read".into()));
+        return Err(RecoveryError::IoFailure(
+            "short APFS container superblock read".into(),
+        ));
     }
     let base = parse_container_superblock(&initial)?;
     let block_size = base.block_size as usize;
     if block_size > initial.len() {
-        return Err(RecoveryError::IoFailure("APFS container block exceeds initial read".into()));
+        return Err(RecoveryError::IoFailure(
+            "APFS container block exceeds initial read".into(),
+        ));
     }
     verify_fletcher64(&initial[..block_size])?;
     if u64::from(base.block_size) > range.length {
-        return Err(RecoveryError::IoFailure("APFS container block exceeds supplied range".into()));
+        return Err(RecoveryError::IoFailure(
+            "APFS container block exceeds supplied range".into(),
+        ));
     }
 
     let desc_blocks_raw = u32_at(&initial, NX_XP_DESC_BLOCKS);
@@ -55,18 +71,28 @@ pub(crate) fn read_latest_container_superblock_with_block<D: BlockDevice>(
         return Ok((base, initial[..block_size].to_vec()));
     }
     if desc_blocks > MAX_CHECKPOINT_BLOCKS {
-        return Err(RecoveryError::LengthTooLarge { length: desc_blocks as u64 });
+        return Err(RecoveryError::LengthTooLarge {
+            length: desc_blocks as u64,
+        });
     }
 
     let desc_base = u64_at(&initial, NX_XP_DESC_BASE);
-    let desc_end = desc_base.checked_add(desc_blocks as u64).ok_or(RecoveryError::RangeOverflow)?;
+    let desc_end = desc_base
+        .checked_add(desc_blocks as u64)
+        .ok_or(RecoveryError::RangeOverflow)?;
     if desc_end > base.block_count {
-        return Err(RecoveryError::OutOfRange { offset: desc_base, length: desc_blocks as u64, capacity: base.block_count });
+        return Err(RecoveryError::OutOfRange {
+            offset: desc_base,
+            length: desc_blocks as u64,
+            capacity: base.block_count,
+        });
     }
 
     let mut best: Option<(u64, ApfsContainer, Vec<u8>)> = None;
     for index in 0..desc_blocks {
-        let oid = desc_base.checked_add(index as u64).ok_or(RecoveryError::RangeOverflow)?;
+        let oid = desc_base
+            .checked_add(index as u64)
+            .ok_or(RecoveryError::RangeOverflow)?;
         let block = read_object(device, range, &base, oid)?;
         if verify_fletcher64(&block).is_err() {
             continue;
@@ -84,7 +110,8 @@ pub(crate) fn read_latest_container_superblock_with_block<D: BlockDevice>(
         // Require its self-described ring position to agree with the physical
         // position we scanned; otherwise stale/corrupt NXSB-like data can win
         // merely because it has a large transaction identifier.
-        let candidate_desc_blocks = u64::from(u32_at(&block, NX_XP_DESC_BLOCKS) & !XP_DESC_FRAGMENTED);
+        let candidate_desc_blocks =
+            u64::from(u32_at(&block, NX_XP_DESC_BLOCKS) & !XP_DESC_FRAGMENTED);
         let candidate_desc_index = u64::from(u32_at(&block, NX_XP_DESC_INDEX));
         let candidate_desc_len = u64::from(u32_at(&block, NX_XP_DESC_LEN));
         if candidate_desc_blocks == 0
@@ -95,7 +122,8 @@ pub(crate) fn read_latest_container_superblock_with_block<D: BlockDevice>(
         {
             continue;
         }
-        let expected_index = (candidate_desc_index + candidate_desc_len - 1) % candidate_desc_blocks;
+        let expected_index =
+            (candidate_desc_index + candidate_desc_len - 1) % candidate_desc_blocks;
         if expected_index != u64::from(index) {
             continue;
         }
@@ -106,15 +134,21 @@ pub(crate) fn read_latest_container_superblock_with_block<D: BlockDevice>(
         if candidate_bytes > range.length {
             continue;
         }
-        if best.as_ref().map(|(xid, _, _)| header.xid > *xid).unwrap_or(true) {
+        if best
+            .as_ref()
+            .map(|(xid, _, _)| header.xid > *xid)
+            .unwrap_or(true)
+        {
             best = Some((header.xid, candidate, block));
         }
     }
 
-    Ok(best.map(|(_, container, block)| (container, block)).unwrap_or_else(|| {
-        let block = initial[..block_size].to_vec();
-        (base, block)
-    }))
+    Ok(best
+        .map(|(_, container, block)| (container, block))
+        .unwrap_or_else(|| {
+            let block = initial[..block_size].to_vec();
+            (base, block)
+        }))
 }
 
 /// Locate the newest valid container superblock stored in the checkpoint
@@ -166,7 +200,8 @@ mod tests {
     #[test]
     fn fragmented_flag_is_detected() {
         let mut block = vec![0u8; 512];
-        block[NX_XP_DESC_BLOCKS..NX_XP_DESC_BLOCKS + 4].copy_from_slice(&XP_DESC_FRAGMENTED.to_le_bytes());
+        block[NX_XP_DESC_BLOCKS..NX_XP_DESC_BLOCKS + 4]
+            .copy_from_slice(&XP_DESC_FRAGMENTED.to_le_bytes());
         assert_ne!(u32_at(&block, NX_XP_DESC_BLOCKS) & XP_DESC_FRAGMENTED, 0);
     }
 }

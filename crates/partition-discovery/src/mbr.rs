@@ -2,7 +2,7 @@ use recovery_core::{ByteRange, RecoveryError, RecoveryResult};
 use storage_io::BlockDevice;
 
 use crate::{
-    detect_overlaps, read_exact_at, Diagnostic, DiscoveryResult, DiskGeometry, PartitionCandidate,
+    Diagnostic, DiscoveryResult, DiskGeometry, PartitionCandidate, detect_overlaps, read_exact_at,
 };
 
 const MBR_SIZE: usize = 512;
@@ -65,27 +65,35 @@ pub fn discover_mbr<D: BlockDevice>(
         let start = match u64::from(entry.start_lba).checked_mul(geometry.logical_sector_size) {
             Some(v) => v,
             None => {
-                result.diagnostics.push(Diagnostic::RangeOverflow { index: entry.index });
+                result
+                    .diagnostics
+                    .push(Diagnostic::RangeOverflow { index: entry.index });
                 continue;
             }
         };
         let length = match u64::from(entry.sector_count).checked_mul(geometry.logical_sector_size) {
             Some(v) => v,
             None => {
-                result.diagnostics.push(Diagnostic::RangeOverflow { index: entry.index });
+                result
+                    .diagnostics
+                    .push(Diagnostic::RangeOverflow { index: entry.index });
                 continue;
             }
         };
         let range = match ByteRange::new(start, length) {
             Ok(v) => v,
             Err(RecoveryError::RangeOverflow) => {
-                result.diagnostics.push(Diagnostic::RangeOverflow { index: entry.index });
+                result
+                    .diagnostics
+                    .push(Diagnostic::RangeOverflow { index: entry.index });
                 continue;
             }
             Err(e) => return Err(e),
         };
         if range.validate_within(device.capacity()).is_err() {
-            result.diagnostics.push(Diagnostic::RangeOutOfBounds { index: entry.index });
+            result
+                .diagnostics
+                .push(Diagnostic::RangeOutOfBounds { index: entry.index });
             continue;
         }
         result.partitions.push(PartitionCandidate {
@@ -107,7 +115,9 @@ mod tests {
 
     struct MemoryDevice(Vec<u8>);
     impl BlockDevice for MemoryDevice {
-        fn capacity(&self) -> u64 { self.0.len() as u64 }
+        fn capacity(&self) -> u64 {
+            self.0.len() as u64
+        }
         fn read(&self, range: ByteRange, output: &mut [u8]) -> RecoveryResult<usize> {
             range.validate_within(self.capacity())?;
             let n = usize::try_from(range.length).unwrap();
@@ -141,7 +151,10 @@ mod tests {
     fn reports_invalid_signature() {
         let d = MemoryDevice(vec![0u8; 512]);
         let r = discover_mbr(&d, DiskGeometry::new(512).unwrap()).unwrap();
-        assert!(matches!(r.diagnostics.as_slice(), [Diagnostic::InvalidMbrSignature]));
+        assert!(matches!(
+            r.diagnostics.as_slice(),
+            [Diagnostic::InvalidMbrSignature]
+        ));
     }
 
     #[test]
@@ -149,6 +162,9 @@ mod tests {
         let d = MemoryDevice(image_with_entry(30, 8));
         let r = discover_mbr(&d, DiskGeometry::new(512).unwrap()).unwrap();
         assert!(r.partitions.is_empty());
-        assert!(matches!(r.diagnostics[0], Diagnostic::RangeOutOfBounds { .. }));
+        assert!(matches!(
+            r.diagnostics[0],
+            Diagnostic::RangeOutOfBounds { .. }
+        ));
     }
 }

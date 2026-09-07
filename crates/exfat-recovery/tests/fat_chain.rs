@@ -5,12 +5,16 @@ use storage_io::BlockDevice;
 struct MemoryDevice(Vec<u8>);
 
 impl BlockDevice for MemoryDevice {
-    fn capacity(&self) -> u64 { self.0.len() as u64 }
+    fn capacity(&self) -> u64 {
+        self.0.len() as u64
+    }
 
     fn read(&self, range: ByteRange, output: &mut [u8]) -> RecoveryResult<usize> {
         let start = usize::try_from(range.offset).unwrap();
         let end = start.checked_add(output.len()).unwrap();
-        if end > self.0.len() { return Ok(0); }
+        if end > self.0.len() {
+            return Ok(0);
+        }
         output.copy_from_slice(&self.0[start..end]);
         Ok(output.len())
     }
@@ -39,12 +43,17 @@ fn device_with_fat(entries: &[(u32, u32)]) -> MemoryDevice {
     MemoryDevice(bytes)
 }
 
-fn range() -> ByteRange { ByteRange::new(0, 64 * 512).unwrap() }
+fn range() -> ByteRange {
+    ByteRange::new(0, 64 * 512).unwrap()
+}
 
 #[test]
 fn traverses_normal_chain_to_eoc() {
     let device = device_with_fat(&[(2, 3), (3, 4), (4, 0xFFFF_FFFF)]);
-    assert_eq!(volume().cluster_chain(&device, range(), 2).unwrap(), vec![2, 3, 4]);
+    assert_eq!(
+        volume().cluster_chain(&device, range(), 2).unwrap(),
+        vec![2, 3, 4]
+    );
 }
 
 #[test]

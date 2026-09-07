@@ -45,7 +45,9 @@ impl MacRawDevice {
         removable: bool,
     ) -> RecoveryResult<Self> {
         if capacity == 0 {
-            return Err(RecoveryError::IoFailure("macOS device capacity is zero".into()));
+            return Err(RecoveryError::IoFailure(
+                "macOS device capacity is zero".into(),
+            ));
         }
         if logical_sector_size == 0 || !logical_sector_size.is_power_of_two() {
             return Err(RecoveryError::Unsupported(
@@ -91,10 +93,9 @@ impl MacRawDevice {
     fn read_at(&self, range: ByteRange, output: &mut [u8]) -> io::Result<usize> {
         let mut total = 0usize;
         while total < output.len() {
-            let offset = range
-                .offset
-                .checked_add(total as u64)
-                .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "read offset overflow"))?;
+            let offset = range.offset.checked_add(total as u64).ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidInput, "read offset overflow")
+            })?;
             let n = self.file.read_at(&mut output[total..], offset)?;
             if n == 0 {
                 break;
@@ -112,8 +113,10 @@ impl BlockDevice for MacRawDevice {
 
     fn read(&self, range: ByteRange, output: &mut [u8]) -> RecoveryResult<usize> {
         range.validate_within(self.capacity())?;
-        let requested = usize::try_from(range.length)
-            .map_err(|_| RecoveryError::LengthTooLarge { length: range.length })?;
+        let requested =
+            usize::try_from(range.length).map_err(|_| RecoveryError::LengthTooLarge {
+                length: range.length,
+            })?;
         if output.len() < requested {
             return Err(RecoveryError::IoFailure(format!(
                 "output buffer is too small: need {requested}, got {}",
@@ -152,13 +155,17 @@ pub fn raw_device_path(path: impl AsRef<Path>) -> RecoveryResult<PathBuf> {
     let value = path.to_string_lossy();
     if let Some(rest) = value.strip_prefix("/dev/disk") {
         if !valid_disk_suffix(rest) {
-            return Err(RecoveryError::Unsupported("invalid macOS disk device path".into()));
+            return Err(RecoveryError::Unsupported(
+                "invalid macOS disk device path".into(),
+            ));
         }
         return Ok(PathBuf::from(format!("/dev/rdisk{rest}")));
     }
     if let Some(rest) = value.strip_prefix("/dev/rdisk") {
         if !valid_disk_suffix(rest) {
-            return Err(RecoveryError::Unsupported("invalid macOS raw disk device path".into()));
+            return Err(RecoveryError::Unsupported(
+                "invalid macOS raw disk device path".into(),
+            ));
         }
         return Ok(path.to_path_buf());
     }
@@ -173,14 +180,26 @@ mod tests {
 
     #[test]
     fn converts_disk_to_raw_disk() {
-        assert_eq!(raw_device_path("/dev/disk4").unwrap(), PathBuf::from("/dev/rdisk4"));
-        assert_eq!(raw_device_path("/dev/disk4s2").unwrap(), PathBuf::from("/dev/rdisk4s2"));
+        assert_eq!(
+            raw_device_path("/dev/disk4").unwrap(),
+            PathBuf::from("/dev/rdisk4")
+        );
+        assert_eq!(
+            raw_device_path("/dev/disk4s2").unwrap(),
+            PathBuf::from("/dev/rdisk4s2")
+        );
     }
 
     #[test]
     fn preserves_raw_disk() {
-        assert_eq!(raw_device_path("/dev/rdisk4").unwrap(), PathBuf::from("/dev/rdisk4"));
-        assert_eq!(raw_device_path("/dev/rdisk4s2").unwrap(), PathBuf::from("/dev/rdisk4s2"));
+        assert_eq!(
+            raw_device_path("/dev/rdisk4").unwrap(),
+            PathBuf::from("/dev/rdisk4")
+        );
+        assert_eq!(
+            raw_device_path("/dev/rdisk4s2").unwrap(),
+            PathBuf::from("/dev/rdisk4s2")
+        );
     }
 
     #[test]

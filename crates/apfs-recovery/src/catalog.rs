@@ -1,7 +1,10 @@
 use recovery_core::{ByteRange, RecoveryError, RecoveryResult};
 use storage_io::BlockDevice;
 
-use crate::{btree_variable_entries, lookup_volume_object, read_object, ApfsContainer, ApfsObjectMapKey, ApfsVariableBtreeEntry, ApfsVolume};
+use crate::{
+    ApfsContainer, ApfsObjectMapKey, ApfsVariableBtreeEntry, ApfsVolume, btree_variable_entries,
+    lookup_volume_object, read_object,
+};
 
 const MAX_DEPTH: usize = 64;
 
@@ -15,9 +18,13 @@ pub struct ApfsCatalogRecord {
 
 fn child_oid(entry: &ApfsVariableBtreeEntry<'_>) -> RecoveryResult<u64> {
     if entry.value.len() != 8 {
-        return Err(RecoveryError::IoFailure("APFS catalog branch value must be an object ID".into()));
+        return Err(RecoveryError::IoFailure(
+            "APFS catalog branch value must be an object ID".into(),
+        ));
     }
-    Ok(u64::from_le_bytes(entry.value.try_into().expect("validated APFS child OID")))
+    Ok(u64::from_le_bytes(
+        entry.value.try_into().expect("validated APFS child OID"),
+    ))
 }
 
 /// Traverse every reachable catalog B-tree child when node references are
@@ -38,20 +45,30 @@ pub fn read_catalog_records<D: BlockDevice>(
         out: &mut Vec<ApfsCatalogRecord>,
     ) -> RecoveryResult<()> {
         if depth >= MAX_DEPTH {
-            return Err(RecoveryError::IoFailure("APFS catalog tree exceeds depth limit".into()));
+            return Err(RecoveryError::IoFailure(
+                "APFS catalog tree exceeds depth limit".into(),
+            ));
         }
         if node_oid >= container.block_count {
-            return Err(RecoveryError::OutOfRange { offset: node_oid, length: 1, capacity: container.block_count });
+            return Err(RecoveryError::OutOfRange {
+                offset: node_oid,
+                length: 1,
+                capacity: container.block_count,
+            });
         }
         if visited.contains(&node_oid) {
-            return Err(RecoveryError::IoFailure("APFS catalog tree contains a cycle".into()));
+            return Err(RecoveryError::IoFailure(
+                "APFS catalog tree contains a cycle".into(),
+            ));
         }
         visited.push(node_oid);
         let block = read_object(device, range, container, node_oid)?;
         let node = crate::parse_btree_node(&block)?;
         let entries = btree_variable_entries(&block)?;
         if entries.is_empty() {
-            return Err(RecoveryError::IoFailure("APFS catalog node has no entries".into()));
+            return Err(RecoveryError::IoFailure(
+                "APFS catalog node has no entries".into(),
+            ));
         }
         if node.is_leaf() {
             out.extend(entries.into_iter().map(|entry| ApfsCatalogRecord {
@@ -70,7 +87,15 @@ pub fn read_catalog_records<D: BlockDevice>(
 
     let mut visited = Vec::new();
     let mut records = Vec::new();
-    walk(device, range, container, root_oid, 0, &mut visited, &mut records)?;
+    walk(
+        device,
+        range,
+        container,
+        root_oid,
+        0,
+        &mut visited,
+        &mut records,
+    )?;
     Ok(records)
 }
 
@@ -92,16 +117,29 @@ pub fn read_volume_catalog_records<D: BlockDevice>(
         oid: u64,
         xid: u64,
     ) -> RecoveryResult<u64> {
-        let mapping = lookup_volume_object(device, range, container, volume, ApfsObjectMapKey { oid, xid })?;
+        let mapping = lookup_volume_object(
+            device,
+            range,
+            container,
+            volume,
+            ApfsObjectMapKey { oid, xid },
+        )?;
         if mapping.is_deleted() {
-            return Err(RecoveryError::IoFailure("APFS catalog node mapping is deleted".into()));
+            return Err(RecoveryError::IoFailure(
+                "APFS catalog node mapping is deleted".into(),
+            ));
         }
         if mapping.physical_address >= container.block_count {
-            return Err(RecoveryError::OutOfRange { offset: mapping.physical_address, length: 1, capacity: container.block_count });
+            return Err(RecoveryError::OutOfRange {
+                offset: mapping.physical_address,
+                length: 1,
+                capacity: container.block_count,
+            });
         }
         Ok(mapping.physical_address)
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn walk<D: BlockDevice>(
         device: &D,
         range: ByteRange,
@@ -114,10 +152,14 @@ pub fn read_volume_catalog_records<D: BlockDevice>(
         out: &mut Vec<ApfsCatalogRecord>,
     ) -> RecoveryResult<()> {
         if depth >= MAX_DEPTH {
-            return Err(RecoveryError::IoFailure("APFS catalog tree exceeds depth limit".into()));
+            return Err(RecoveryError::IoFailure(
+                "APFS catalog tree exceeds depth limit".into(),
+            ));
         }
         if visited.contains(&node_oid) {
-            return Err(RecoveryError::IoFailure("APFS catalog tree contains a cycle".into()));
+            return Err(RecoveryError::IoFailure(
+                "APFS catalog tree contains a cycle".into(),
+            ));
         }
         visited.push(node_oid);
         let physical = resolve_node(device, range, container, volume, node_oid, xid)?;
@@ -125,7 +167,9 @@ pub fn read_volume_catalog_records<D: BlockDevice>(
         let node = crate::parse_btree_node(&block)?;
         let entries = btree_variable_entries(&block)?;
         if entries.is_empty() {
-            return Err(RecoveryError::IoFailure("APFS catalog node has no entries".into()));
+            return Err(RecoveryError::IoFailure(
+                "APFS catalog node has no entries".into(),
+            ));
         }
         if node.is_leaf() {
             out.extend(entries.into_iter().map(|entry| ApfsCatalogRecord {
@@ -134,7 +178,17 @@ pub fn read_volume_catalog_records<D: BlockDevice>(
             }));
         } else {
             for entry in entries {
-                walk(device, range, container, volume, child_oid(&entry)?, xid, depth + 1, visited, out)?;
+                walk(
+                    device,
+                    range,
+                    container,
+                    volume,
+                    child_oid(&entry)?,
+                    xid,
+                    depth + 1,
+                    visited,
+                    out,
+                )?;
             }
         }
         visited.pop();
@@ -142,11 +196,23 @@ pub fn read_volume_catalog_records<D: BlockDevice>(
     }
 
     if volume.root_tree_oid == 0 {
-        return Err(RecoveryError::IoFailure("APFS volume has no root-tree OID".into()));
+        return Err(RecoveryError::IoFailure(
+            "APFS volume has no root-tree OID".into(),
+        ));
     }
     let mut visited = Vec::new();
     let mut records = Vec::new();
-    walk(device, range, container, volume, volume.root_tree_oid, xid, 0, &mut visited, &mut records)?;
+    walk(
+        device,
+        range,
+        container,
+        volume,
+        volume.root_tree_oid,
+        xid,
+        0,
+        &mut visited,
+        &mut records,
+    )?;
     Ok(records)
 }
 
@@ -156,7 +222,10 @@ mod tests {
 
     #[test]
     fn rejects_non_oid_branch_values() {
-        let data = ApfsVariableBtreeEntry { key: &[0u8; 8], value: &[0u8; 7] };
+        let data = ApfsVariableBtreeEntry {
+            key: &[0u8; 8],
+            value: &[0u8; 7],
+        };
         assert!(child_oid(&data).is_err());
     }
 
@@ -164,7 +233,10 @@ mod tests {
     fn decodes_little_endian_child_oid() {
         let oid = 0x1122_3344_5566_7788u64;
         let bytes = oid.to_le_bytes();
-        let data = ApfsVariableBtreeEntry { key: &[0u8; 8], value: &bytes };
+        let data = ApfsVariableBtreeEntry {
+            key: &[0u8; 8],
+            value: &bytes,
+        };
         assert_eq!(child_oid(&data).unwrap(), oid);
     }
 }

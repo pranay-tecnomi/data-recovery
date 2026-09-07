@@ -36,35 +36,59 @@ pub struct ApfsObjectMapValue {
 }
 
 impl ApfsObjectMapValue {
-    pub fn is_deleted(self) -> bool { self.flags & OMAP_VAL_DELETED != 0 }
-    pub fn is_saved(self) -> bool { self.flags & OMAP_VAL_SAVED != 0 }
-    pub fn is_encrypted(self) -> bool { self.flags & OMAP_VAL_ENCRYPTED != 0 }
-    pub fn has_no_header(self) -> bool { self.flags & OMAP_VAL_NOHEADER != 0 }
+    pub fn is_deleted(self) -> bool {
+        self.flags & OMAP_VAL_DELETED != 0
+    }
+    pub fn is_saved(self) -> bool {
+        self.flags & OMAP_VAL_SAVED != 0
+    }
+    pub fn is_encrypted(self) -> bool {
+        self.flags & OMAP_VAL_ENCRYPTED != 0
+    }
+    pub fn has_no_header(self) -> bool {
+        self.flags & OMAP_VAL_NOHEADER != 0
+    }
 }
 
 fn u32_at(data: &[u8], offset: usize) -> u32 {
-    u32::from_le_bytes(data[offset..offset + 4].try_into().expect("fixed APFS field"))
+    u32::from_le_bytes(
+        data[offset..offset + 4]
+            .try_into()
+            .expect("fixed APFS field"),
+    )
 }
 
 fn u64_at(data: &[u8], offset: usize) -> u64 {
-    u64::from_le_bytes(data[offset..offset + 8].try_into().expect("fixed APFS field"))
+    u64::from_le_bytes(
+        data[offset..offset + 8]
+            .try_into()
+            .expect("fixed APFS field"),
+    )
 }
 
 pub fn parse_object_map(data: &[u8]) -> RecoveryResult<ApfsObjectMap> {
     if data.len() < OMAP_HEADER_LEN {
-        return Err(RecoveryError::LengthTooLarge { length: data.len() as u64 });
+        return Err(RecoveryError::LengthTooLarge {
+            length: data.len() as u64,
+        });
     }
     let tree_type = u32_at(data, 40);
     let snapshot_tree_type = u32_at(data, 44);
     if tree_type & OMAP_TREE_TYPE_MASK != OBJECT_TYPE_BTREE {
-        return Err(RecoveryError::IoFailure("APFS object map has invalid tree type".into()));
+        return Err(RecoveryError::IoFailure(
+            "APFS object map has invalid tree type".into(),
+        ));
     }
     if snapshot_tree_type & OMAP_TREE_TYPE_MASK != OBJECT_TYPE_BTREE {
-        return Err(RecoveryError::IoFailure("APFS object map has invalid snapshot tree type".into()));
+        return Err(RecoveryError::IoFailure(
+            "APFS object map has invalid snapshot tree type".into(),
+        ));
     }
     let tree_oid = u64_at(data, 48);
     if tree_oid == 0 {
-        return Err(RecoveryError::IoFailure("APFS object map has no tree root".into()));
+        return Err(RecoveryError::IoFailure(
+            "APFS object map has no tree root".into(),
+        ));
     }
     Ok(ApfsObjectMap {
         flags: u32_at(data, 32),
@@ -82,14 +106,21 @@ pub fn parse_object_map(data: &[u8]) -> RecoveryResult<ApfsObjectMap> {
 
 pub fn parse_object_map_key(data: &[u8]) -> RecoveryResult<ApfsObjectMapKey> {
     if data.len() < 16 {
-        return Err(RecoveryError::LengthTooLarge { length: data.len() as u64 });
+        return Err(RecoveryError::LengthTooLarge {
+            length: data.len() as u64,
+        });
     }
-    Ok(ApfsObjectMapKey { oid: u64_at(data, 0), xid: u64_at(data, 8) })
+    Ok(ApfsObjectMapKey {
+        oid: u64_at(data, 0),
+        xid: u64_at(data, 8),
+    })
 }
 
 pub fn parse_object_map_value(data: &[u8]) -> RecoveryResult<ApfsObjectMapValue> {
     if data.len() < 16 {
-        return Err(RecoveryError::LengthTooLarge { length: data.len() as u64 });
+        return Err(RecoveryError::LengthTooLarge {
+            length: data.len() as u64,
+        });
     }
     Ok(ApfsObjectMapValue {
         flags: u32_at(data, 0),
@@ -126,7 +157,10 @@ mod tests {
         let mut key = [0u8; 16];
         key[0..8].copy_from_slice(&9u64.to_le_bytes());
         key[8..16].copy_from_slice(&10u64.to_le_bytes());
-        assert_eq!(parse_object_map_key(&key).unwrap(), ApfsObjectMapKey { oid: 9, xid: 10 });
+        assert_eq!(
+            parse_object_map_key(&key).unwrap(),
+            ApfsObjectMapKey { oid: 9, xid: 10 }
+        );
 
         let mut value = [0u8; 16];
         value[0..4].copy_from_slice(&OMAP_VAL_DELETED.to_le_bytes());
