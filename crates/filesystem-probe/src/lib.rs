@@ -4,7 +4,7 @@ use recovery_core::{ByteRange, RecoveryError, RecoveryResult};
 use storage_io::BlockDevice;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum FilesystemKind { Unknown, Fat32, ExFat }
+pub enum FilesystemKind { Unknown, Fat32, ExFat, Apfs }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ProbeEvidence {
@@ -21,12 +21,41 @@ fn read_boot<D: BlockDevice>(device: &D, range: ByteRange) -> RecoveryResult<[u8
     Ok(boot)
 }
 
+fn read_prefix<D: BlockDevice>(device: &D, range: ByteRange, length: usize) -> RecoveryResult<Vec<u8>> {
+    if range.length < length as u64 { return Err(RecoveryError::IoFailure("probe range smaller than requested prefix".into())); }
+    let mut prefix = vec![0u8; length];
+    let n = device.read(ByteRange::new(range.offset, length as u64)?, &mut prefix)?;
+    if n != prefix.len() { return Err(RecoveryError::IoFailure("short filesystem prefix read".into())); }
+    Ok(prefix)
+}
+
 fn valid_signature(boot: &[u8; 512]) -> bool { boot[510] == 0x55 && boot[511] == 0xAA }
 fn power_of_two_in(value: u64, min: u64, max: u64) -> bool { value.is_power_of_two() && (min..=max).contains(&value) }
 
+fn probe_apfs<D: BlockDevice>(device: &D, range: ByteRange) -> RecoveryResult<Option<ProbeEvidence>> {
+    if range.length < 4096 { return Ok(None); }
+    let block = read_prefix(device, range, 4096)?;
+    // APFS container and volume superblocks share the object header magic area;
+    // NXSB identifies a container superblock and APSB identifies a volume.
+    let magic = &block[32..36];
+    if magic != b"NXSB" && magic != b"APSB" { return Ok(None); }
+
+    let block_size = u32::from_le_bytes(block[40..44].try_into().expect("fixed APFS integer")) as u64;
+    if !power_of_two_in(block_size, 4096, 65536) || block_size > range.length { return Ok(None); }
+
+    let block_count = u64::from_le_bytes(block[48..56].try_into().expect("fixed APFS integer"));
+    if block_count == 0 { return Ok(None); }
+
+    let (kind, notes) = if magic == b"NXSB" {
+        (FilesystemKind::Apfs, vec!["APFS NXSB container superblock", "plausible APFS block geometry"])
+    } else {
+        (FilesystemKind::Apfs, vec!["APFS APSB volume superblock", "plausible APFS block geometry"])
+    };
+    Ok(Some(ProbeEvidence { kind, confidence: 90, notes }))
+}
+
 fn probe_exfat(boot: &[u8; 512]) -> Option<ProbeEvidence> {
     if &boot[3..11] != b"EXFAT   " || !valid_signature(boot) { return None; }
-    // exFAT reserves bytes 11..=63 as zero in the main boot region.
     if boot[11..64].iter().any(|&b| b != 0) { return None; }
     let sector_shift = boot[108];
     let cluster_shift = boot[109];
@@ -60,13 +89,13 @@ fn probe_fat32(boot: &[u8; 512]) -> Option<ProbeEvidence> {
     if data_start >= total { return None; }
     let data_sectors = total - data_start;
     let clusters = data_sectors / sectors_per_cluster;
-    // FAT32 requires at least 65525 clusters; do not trust the cosmetic type label alone.
     if clusters < 65_525 || u64::from(root_cluster) >= clusters.saturating_add(2) { return None; }
     Some(ProbeEvidence { kind: FilesystemKind::Fat32, confidence: 95, notes: vec!["FAT32 BPB geometry", "FAT32 cluster count", "root cluster", "boot signature"] })
 }
 
 pub fn probe<D: BlockDevice>(device: &D, range: ByteRange) -> RecoveryResult<ProbeEvidence> {
     range.validate_within(device.capacity())?;
+    if let Some(evidence) = probe_apfs(device, range)? { return Ok(evidence); }
     let boot = read_boot(device, range)?;
     if let Some(evidence) = probe_exfat(&boot) { return Ok(evidence); }
     if let Some(evidence) = probe_fat32(&boot) { return Ok(evidence); }
@@ -81,8 +110,12 @@ mod tests {
         fn capacity(&self) -> u64 { self.0.len() as u64 }
         fn read(&self, r: ByteRange, o: &mut [u8]) -> RecoveryResult<usize> { r.validate_within(self.capacity())?; let n=r.length as usize; o[..n].copy_from_slice(&self.0[r.offset as usize..r.offset as usize+n]); Ok(n) }
     }
+    fn apfs(magic: &[u8; 4]) -> Vec<u8> { let mut b=vec![0u8;4096]; b[32..36].copy_from_slice(magic); b[40..44].copy_from_slice(&4096u32.to_le_bytes()); b[48..56].copy_from_slice(&1024u64.to_le_bytes()); b }
     fn exfat() -> Vec<u8> { let mut b=vec![0u8;512]; b[3..11].copy_from_slice(b"EXFAT   "); b[80..84].copy_from_slice(&24u32.to_le_bytes()); b[84..88].copy_from_slice(&128u32.to_le_bytes()); b[88..92].copy_from_slice(&256u32.to_le_bytes()); b[92..96].copy_from_slice(&100u32.to_le_bytes()); b[96..100].copy_from_slice(&2u32.to_le_bytes()); b[108]=9;b[109]=3;b[510]=0x55;b[511]=0xAA;b }
     fn fat32() -> Vec<u8> { let mut b=vec![0u8;512]; b[11..13].copy_from_slice(&512u16.to_le_bytes()); b[13]=1;b[14..16].copy_from_slice(&32u16.to_le_bytes());b[16]=2;b[32..36].copy_from_slice(&200_000u32.to_le_bytes());b[36..40].copy_from_slice(&1000u32.to_le_bytes());b[44..48].copy_from_slice(&2u32.to_le_bytes());b[510]=0x55;b[511]=0xAA;b }
+    #[test] fn detects_apfs_container() { let r=probe(&Mem(apfs(b"NXSB")),ByteRange::new(0,4096).unwrap()).unwrap(); assert_eq!(r.kind,FilesystemKind::Apfs); }
+    #[test] fn detects_apfs_volume() { let r=probe(&Mem(apfs(b"APSB")),ByteRange::new(0,4096).unwrap()).unwrap(); assert_eq!(r.kind,FilesystemKind::Apfs); }
+    #[test] fn rejects_invalid_apfs_geometry() { let mut b=apfs(b"NXSB"); b[40..44].copy_from_slice(&1024u32.to_le_bytes()); let r=probe(&Mem(b),ByteRange::new(0,4096).unwrap()).unwrap(); assert_eq!(r.kind,FilesystemKind::Unknown); }
     #[test] fn detects_exfat() { let r=probe(&Mem(exfat()),ByteRange::new(0,512).unwrap()).unwrap(); assert_eq!(r.kind,FilesystemKind::ExFat); }
     #[test] fn rejects_exfat_nonzero_reserved_bytes() { let mut b=exfat(); b[11]=1; let r=probe(&Mem(b),ByteRange::new(0,512).unwrap()).unwrap(); assert_eq!(r.kind,FilesystemKind::Unknown); }
     #[test] fn detects_fat32_without_cosmetic_label() { let r=probe(&Mem(fat32()),ByteRange::new(0,512).unwrap()).unwrap(); assert_eq!(r.kind,FilesystemKind::Fat32); }
