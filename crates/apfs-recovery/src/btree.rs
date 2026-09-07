@@ -314,14 +314,19 @@ mod tests {
         data[36..40].copy_from_slice(&2u32.to_le_bytes());
         data[40..42].copy_from_slice(&0u16.to_le_bytes());
         data[42..44].copy_from_slice(&8u16.to_le_bytes());
+        // Fixed (kvoff_t) table entries: key offsets run forward from the key
+        // area, value offsets run *backwards* from the end of the value area
+        // (the footer boundary, 512 - 40 = 472 for this root node).
         data[56..58].copy_from_slice(&0u16.to_le_bytes());
-        data[58..60].copy_from_slice(&0u16.to_le_bytes());
+        data[58..60].copy_from_slice(&16u16.to_le_bytes());
         data[60..62].copy_from_slice(&8u16.to_le_bytes());
-        data[62..64].copy_from_slice(&16u16.to_le_bytes());
+        data[62..64].copy_from_slice(&32u16.to_le_bytes());
         data[64..72].copy_from_slice(b"KEY00001");
         data[72..80].copy_from_slice(b"KEY00002");
-        data[432..448].copy_from_slice(b"VALUE00000000001");
-        data[448..464].copy_from_slice(b"VALUE00000000002");
+        // value area end = 472; entry 0 at 472-16=456 back 16 => [440, 456)
+        data[440..456].copy_from_slice(b"VALUE00000000001");
+        // entry 1 at 472-32=440 back 16 => [424, 440)
+        data[424..440].copy_from_slice(b"VALUE00000000002");
         data
     }
     fn variable_node() -> Vec<u8> {
@@ -330,14 +335,21 @@ mod tests {
         data[36..40].copy_from_slice(&2u32.to_le_bytes());
         data[40..42].copy_from_slice(&0u16.to_le_bytes());
         data[42..44].copy_from_slice(&16u16.to_le_bytes());
+        // Variable (kvloc_t) entries: {key_off, key_len, value_off, value_len}.
+        // table_space_length = 16 puts the key area at 56 + 16 = 72.
         data[56..58].copy_from_slice(&0u16.to_le_bytes());
         data[58..60].copy_from_slice(&5u16.to_le_bytes());
-        data[60..62].copy_from_slice(&4u16.to_le_bytes());
+        data[60..62].copy_from_slice(&0u16.to_le_bytes());
         data[62..64].copy_from_slice(&3u16.to_le_bytes());
-        data[64..69].copy_from_slice(b"KEY-A");
-        data[69..73].copy_from_slice(b"KEYB");
+        data[64..66].copy_from_slice(&5u16.to_le_bytes());
+        data[66..68].copy_from_slice(&4u16.to_le_bytes());
+        data[68..70].copy_from_slice(&3u16.to_le_bytes());
+        data[70..72].copy_from_slice(&4u16.to_le_bytes());
+        data[72..77].copy_from_slice(b"KEY-A");
+        data[77..81].copy_from_slice(b"KEYB");
+        // value area end = 472; entry 0 => [469, 472), entry 1 => [465, 469)
         data[469..472].copy_from_slice(b"VA1");
-        data[464..468].copy_from_slice(b"VAL2");
+        data[465..469].copy_from_slice(b"VAL2");
         data
     }
     #[test]

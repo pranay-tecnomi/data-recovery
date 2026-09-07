@@ -98,9 +98,12 @@ mod tests {
 
     #[test]
     fn reads_deleted_contiguous_file() {
+        // Cluster N begins at heap_offset + (N - 2) * bytes_per_cluster, so
+        // cluster 4 is [3072, 4096) and cluster 5 begins at 4096. A 1500-byte
+        // file spans all 1024 bytes of cluster 4 and the first 476 of cluster 5.
         let mut bytes = vec![0u8; 51_200];
         bytes[3_072..4_096].fill(0xC3);
-        bytes[4_096..4_568].fill(0x3C);
+        bytes[4_096..4_572].fill(0x3C);
         let device = Device { bytes };
         let entry = ExFatDirectoryEntry {
             name: "old.bin".into(),

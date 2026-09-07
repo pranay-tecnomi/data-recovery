@@ -141,18 +141,38 @@ pub fn lookup_object_map<D: BlockDevice>(
 mod tests {
     use super::*;
 
+    fn omap_key_bytes(oid: u64, xid: u64) -> [u8; OMAP_KEY_SIZE] {
+        let mut key = [0u8; OMAP_KEY_SIZE];
+        key[0..8].copy_from_slice(&oid.to_le_bytes());
+        key[8..16].copy_from_slice(&xid.to_le_bytes());
+        key
+    }
+
     #[test]
     fn compares_object_map_keys_in_oid_then_xid_order() {
+        use std::cmp::Ordering;
+        // The OID is the primary key: a smaller OID orders first regardless of
+        // how large its XID is.
         assert_eq!(
-            compare_key(&[1u8; 16], ApfsObjectMapKey { oid: 2, xid: 1 }).unwrap(),
-            std::cmp::Ordering::Less
+            compare_key(&omap_key_bytes(1, 999), ApfsObjectMapKey { oid: 2, xid: 1 }).unwrap(),
+            Ordering::Less
         );
-        let mut key = [0u8; 16];
-        key[0..8].copy_from_slice(&7u64.to_le_bytes());
-        key[8..16].copy_from_slice(&9u64.to_le_bytes());
         assert_eq!(
-            compare_key(&key, ApfsObjectMapKey { oid: 7, xid: 9 }).unwrap(),
-            std::cmp::Ordering::Equal
+            compare_key(&omap_key_bytes(3, 0), ApfsObjectMapKey { oid: 2, xid: 999 }).unwrap(),
+            Ordering::Greater
+        );
+        // The XID breaks ties only within one OID.
+        assert_eq!(
+            compare_key(&omap_key_bytes(7, 8), ApfsObjectMapKey { oid: 7, xid: 9 }).unwrap(),
+            Ordering::Less
+        );
+        assert_eq!(
+            compare_key(&omap_key_bytes(7, 10), ApfsObjectMapKey { oid: 7, xid: 9 }).unwrap(),
+            Ordering::Greater
+        );
+        assert_eq!(
+            compare_key(&omap_key_bytes(7, 9), ApfsObjectMapKey { oid: 7, xid: 9 }).unwrap(),
+            Ordering::Equal
         );
     }
 

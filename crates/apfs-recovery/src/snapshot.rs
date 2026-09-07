@@ -200,7 +200,9 @@ pub fn mount_snapshot<D: BlockDevice>(
 mod tests {
     use super::*;
     fn jkey(record_type: u8, object_id: u64) -> Vec<u8> {
-        ((u64::from(record_type) << OBJ_TYPE_SHIFT) | object_id)
+        // The object id occupies the low 60 bits only; letting it overflow into
+        // the type nibble silently retypes the record.
+        ((u64::from(record_type) << OBJ_TYPE_SHIFT) | (object_id & OBJ_ID_MASK))
             .to_le_bytes()
             .to_vec()
     }
@@ -221,7 +223,7 @@ mod tests {
             key: jkey(APFS_TYPE_SNAP_METADATA, 99),
             value,
         };
-        let mut name_key = jkey(APFS_TYPE_SNAP_NAME, u64::MAX);
+        let mut name_key = jkey(APFS_TYPE_SNAP_NAME, OBJ_ID_MASK);
         name_key.extend_from_slice(&6u16.to_le_bytes());
         name_key.extend_from_slice(b"named\0");
         let name = ApfsCatalogRecord {
@@ -236,7 +238,7 @@ mod tests {
 
     #[test]
     fn rejects_oversized_snapshot_name() {
-        let mut key = jkey(APFS_TYPE_SNAP_NAME, u64::MAX);
+        let mut key = jkey(APFS_TYPE_SNAP_NAME, OBJ_ID_MASK);
         key.extend_from_slice(&5000u16.to_le_bytes());
         let record = ApfsCatalogRecord {
             key,
