@@ -20,6 +20,11 @@ impl MemoryDevice {
         ByteRange::new(0, self.capacity()).unwrap()
     }
 
+    /// Capacity, for tests that must build a range before opening a device.
+    pub fn capacity_for_test(&self) -> u64 {
+        self.0.len() as u64
+    }
+
     /// Snapshot for verifying the source was never modified.
     pub fn snapshot(&self) -> Vec<u8> {
         self.0.clone()

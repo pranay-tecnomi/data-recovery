@@ -162,19 +162,22 @@ pub fn read_file_extents<D: BlockDevice>(
             return Err(RecoveryError::IoFailure("APFS file extents overlap".into()));
         }
         previous_end = end;
-        if end > file_size {
-            return Err(RecoveryError::OutOfRange {
-                offset: extent.logical_offset,
-                length: extent.length,
-                capacity: file_size,
-            });
+        // APFS extent lengths are block-aligned, so the last extent of a file
+        // whose size is not a whole number of blocks legitimately runs past the
+        // end of the file. Clamp that tail rather than rejecting the extent -
+        // rejecting it would make every unaligned file unrecoverable. An extent
+        // starting at or beyond the file size describes nothing and is skipped.
+        if extent.logical_offset >= file_size {
+            continue;
         }
+        let usable = file_size - extent.logical_offset;
+        let effective_length = extent.length.min(usable);
         let start =
             usize::try_from(extent.logical_offset).map_err(|_| RecoveryError::LengthTooLarge {
                 length: extent.logical_offset,
             })?;
-        let len = usize::try_from(extent.length).map_err(|_| RecoveryError::LengthTooLarge {
-            length: extent.length,
+        let len = usize::try_from(effective_length).map_err(|_| RecoveryError::LengthTooLarge {
+            length: effective_length,
         })?;
         if extent.crypto_id != 0 {
             return Err(RecoveryError::IoFailure(
@@ -193,16 +196,16 @@ pub fn read_file_extents<D: BlockDevice>(
             .checked_add(relative)
             .ok_or(RecoveryError::RangeOverflow)?;
         let physical_end = physical
-            .checked_add(extent.length)
+            .checked_add(effective_length)
             .ok_or(RecoveryError::RangeOverflow)?;
         if physical_end > container_end {
             return Err(RecoveryError::OutOfRange {
                 offset: physical,
-                length: extent.length,
+                length: effective_length,
                 capacity: container_end,
             });
         }
-        let read_range = ByteRange::new(physical, extent.length)?;
+        let read_range = ByteRange::new(physical, effective_length)?;
         read_range.validate_within(device.capacity())?;
         if device.read(read_range, &mut output[start..start + len])? != len {
             return Err(RecoveryError::IoFailure("short APFS extent read".into()));
@@ -263,12 +266,10 @@ where
             return Err(RecoveryError::IoFailure("APFS file extents overlap".into()));
         }
         previous_end = end;
-        if end > file_size {
-            return Err(RecoveryError::OutOfRange {
-                offset: extent.logical_offset,
-                length: extent.length,
-                capacity: file_size,
-            });
+        // See `read_file_extents`: a block-aligned trailing extent may extend
+        // past the file size and is clamped, not rejected.
+        if extent.logical_offset >= file_size {
+            continue;
         }
         if extent.crypto_id != 0 {
             return Err(RecoveryError::IoFailure(
@@ -276,7 +277,7 @@ where
             ));
         }
         let mut logical = extent.logical_offset;
-        let mut remaining = extent.length;
+        let mut remaining = extent.length.min(file_size - extent.logical_offset);
         while remaining != 0 {
             let amount = remaining.min(chunk_size as u64);
             let amount_usize = usize::try_from(amount)
@@ -571,6 +572,80 @@ mod tests {
             read_file_extents(&image, ByteRange::new(0, 16).unwrap(), 4, &extents, 12).unwrap();
         assert_eq!(output, b"ABCD\0\0\0\0QRST");
     }
+    #[test]
+    fn block_aligned_trailing_extent_is_clamped_to_the_file_size() {
+        // APFS extent lengths are always whole blocks, so a 6-byte file stored
+        // in a 4-byte-block volume has a trailing extent running two bytes past
+        // the end. Rejecting that would make every file whose size is not a
+        // multiple of the block size unrecoverable.
+        let image = MemoryDevice {
+            data: Arc::new(Mutex::new(vec![
+                0, 0, 0, 0, 0x41, 0x42, 0x43, 0x44, 0x51, 0x52, 0x53, 0x54,
+            ])),
+        };
+        let extents = vec![
+            ApfsFileExtent {
+                logical_offset: 0,
+                length: 4,
+                physical_block: 1,
+                crypto_id: 0,
+                sparse: false,
+            },
+            ApfsFileExtent {
+                logical_offset: 4,
+                length: 4,
+                physical_block: 2,
+                crypto_id: 0,
+                sparse: false,
+            },
+        ];
+        let range = ByteRange::new(0, 12).unwrap();
+        let output = read_file_extents(&image, range, 4, &extents, 6).unwrap();
+        assert_eq!(
+            output, b"ABCDQR",
+            "the tail past the file size must be dropped"
+        );
+
+        // The streaming path must agree with the buffered one, byte for byte.
+        let mut streamed = vec![0u8; 6];
+        for_each_file_extent_chunk(&image, range, 4, &extents, 6, 4, |offset, chunk| {
+            let at = usize::try_from(offset).unwrap();
+            streamed[at..at + chunk.len()].copy_from_slice(chunk);
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(streamed, output);
+    }
+
+    #[test]
+    fn an_extent_starting_beyond_the_file_size_contributes_nothing() {
+        let image = MemoryDevice {
+            data: Arc::new(Mutex::new(vec![
+                0, 0, 0, 0, 0x41, 0x42, 0x43, 0x44, 0x51, 0x52, 0x53, 0x54,
+            ])),
+        };
+        let extents = vec![
+            ApfsFileExtent {
+                logical_offset: 0,
+                length: 4,
+                physical_block: 1,
+                crypto_id: 0,
+                sparse: false,
+            },
+            // Wholly past the end of a 4-byte file: describes nothing.
+            ApfsFileExtent {
+                logical_offset: 4,
+                length: 4,
+                physical_block: 2,
+                crypto_id: 0,
+                sparse: false,
+            },
+        ];
+        let output =
+            read_file_extents(&image, ByteRange::new(0, 12).unwrap(), 4, &extents, 4).unwrap();
+        assert_eq!(output, b"ABCD");
+    }
+
     #[test]
     fn streams_extent_chunks_without_full_file_allocation() {
         let image = MemoryDevice {

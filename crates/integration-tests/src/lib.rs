@@ -5,6 +5,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod apfs_fixture;
 pub mod fixture;
 
 pub use fixture::{Fat32Image, MemoryDevice};
