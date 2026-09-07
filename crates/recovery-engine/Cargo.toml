@@ -12,6 +12,7 @@ workspace = true
 serde = { version = "1", features = ["derive"] }
 
 recovery-core = { path = "../recovery-core" }
+platform-device = { path = "../platform-device" }
 storage-io = { path = "../storage-io" }
 partition-discovery = { path = "../partition-discovery" }
 filesystem-probe = { path = "../filesystem-probe" }

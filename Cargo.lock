@@ -2532,6 +2532,7 @@ dependencies = [
  "file-carving",
  "filesystem-probe",
  "partition-discovery",
+ "platform-device",
  "recovery-core",
  "recovery-output",
  "serde",

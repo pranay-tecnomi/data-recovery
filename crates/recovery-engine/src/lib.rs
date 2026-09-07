@@ -467,16 +467,26 @@ fn scan_apfs<D: BlockDevice>(
 /// Scans an image file: partitions, filesystems, carving, then scoring.
 pub fn scan_image(path: &Path, include_carving: bool) -> Result<ScanResult, RecoveryError> {
     let device = FileImageDevice::open(path)?;
+    scan_device(&device, &path.display().to_string(), include_carving)
+}
+
+/// Scans any read-only source. Image files and raw devices differ only in how
+/// they are opened, so both take this path and get identical treatment.
+pub fn scan_device<D: BlockDevice>(
+    device: &D,
+    source: &str,
+    include_carving: bool,
+) -> Result<ScanResult, RecoveryError> {
     let cancel = CancellationToken::default();
     let mut diagnostics = Vec::new();
     let mut partitions = Vec::new();
     let mut candidates: Vec<FileCandidate> = Vec::new();
 
-    for (index, range) in discover_partitions(&device, &mut diagnostics)
+    for (index, range) in discover_partitions(device, &mut diagnostics)
         .into_iter()
         .enumerate()
     {
-        let evidence = probe(&device, range).ok();
+        let evidence = probe(device, range).ok();
         let kind = evidence
             .as_ref()
             .map(|e| e.kind)
@@ -500,13 +510,13 @@ pub fn scan_image(path: &Path, include_carving: bool) -> Result<ScanResult, Reco
 
         match kind {
             FilesystemKind::Fat32 => {
-                candidates.extend(scan_fat32(&device, range, &mut diagnostics))
+                candidates.extend(scan_fat32(device, range, &mut diagnostics))
             }
             FilesystemKind::ExFat => {
-                candidates.extend(scan_exfat(&device, range, &mut diagnostics))
+                candidates.extend(scan_exfat(device, range, &mut diagnostics))
             }
             FilesystemKind::Apfs => {
-                candidates.extend(scan_apfs(&device, range, &mut diagnostics))
+                candidates.extend(scan_apfs(device, range, &mut diagnostics))
             }
             FilesystemKind::Unknown => diagnostics.push(format!(
                 "Partition {index} holds no filesystem this build can read; carving may still find files."
@@ -516,21 +526,95 @@ pub fn scan_image(path: &Path, include_carving: bool) -> Result<ScanResult, Reco
 
     if include_carving
         && let Ok(whole) = ByteRange::new(0, device.capacity())
-        && let Ok(carved) = carve(&device, whole, REGISTRY, &CarveLimits::default(), &cancel)
+        && let Ok(carved) = carve(device, whole, REGISTRY, &CarveLimits::default(), &cancel)
     {
         candidates.extend(carved);
     }
 
     // Scoring, deduplication and validation all happen here.
-    let candidates = run_pipeline(&device, candidates, &cancel)?;
+    let candidates = run_pipeline(device, candidates, &cancel)?;
 
     Ok(ScanResult {
-        source: path.display().to_string(),
+        source: source.to_string(),
         capacity: device.capacity(),
         partitions,
         candidates: candidates.iter().map(view).collect(),
         diagnostics,
     })
+}
+
+/// A source the user can pick, whether an attached device or an image file.
+#[derive(Debug, Serialize)]
+pub struct SourceView {
+    pub id: String,
+    pub path: String,
+    pub display_name: String,
+    pub capacity: u64,
+    pub sector_size: u64,
+    pub removable: bool,
+    /// Whole disk rather than a single volume.
+    pub whole_disk: bool,
+    /// Raw devices need elevated access; image files never do.
+    pub requires_elevation: bool,
+}
+
+/// Lists the disks and volumes attached to this machine.
+///
+/// Listing is unprivileged; opening a device for reading is not. The UI uses
+/// this to present sources before asking the user to grant access.
+#[cfg(target_os = "macos")]
+pub fn list_devices() -> Result<Vec<SourceView>, RecoveryError> {
+    use platform_device::SourceKind;
+    Ok(platform_device::enumerate_devices()?
+        .into_iter()
+        .map(|info| SourceView {
+            id: info.id.as_str().to_string(),
+            path: info.path,
+            display_name: info
+                .display_name
+                .unwrap_or_else(|| info.id.as_str().to_string()),
+            capacity: info.capacity,
+            sector_size: info.logical_sector_size,
+            removable: info.removable,
+            whole_disk: info.kind == SourceKind::PhysicalDrive,
+            requires_elevation: info.kind.requires_elevation(),
+        })
+        .collect())
+}
+
+/// Opens a macOS device read-only and scans it.
+///
+/// The device is described by enumeration rather than by the caller, so a UI
+/// cannot pass a capacity or sector size the hardware does not report.
+#[cfg(target_os = "macos")]
+pub fn scan_macos_device(
+    identifier: &str,
+    include_carving: bool,
+) -> Result<ScanResult, RecoveryError> {
+    let device = open_macos_device(identifier)?;
+    let source = device.info().path.clone();
+    scan_device(&device, &source, include_carving)
+}
+
+/// Opens the named device read-only, using enumerated geometry.
+#[cfg(target_os = "macos")]
+fn open_macos_device(identifier: &str) -> Result<platform_device::MacRawDevice, RecoveryError> {
+    let info = platform_device::enumerate_devices()?
+        .into_iter()
+        .find(|candidate| candidate.id.as_str() == identifier)
+        .ok_or_else(|| {
+            RecoveryError::IoFailure(format!("no attached device named {identifier}"))
+        })?;
+    platform_device::MacRawDevice::open(
+        &info.path,
+        info.id.clone(),
+        info.kind,
+        info.capacity,
+        info.logical_sector_size,
+        info.physical_sector_size,
+        info.display_name.clone(),
+        info.removable,
+    )
 }
 
 /// Recovers the selected candidates to a destination directory.
@@ -729,5 +813,51 @@ mod smoke {
         assert_eq!(result.written, 1, "expected one recovered file");
         assert!(std::path::Path::new(&result.manifest_path).exists());
         let _ = std::fs::remove_dir_all(&out);
+    }
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod macos_tests {
+    use super::*;
+
+    #[test]
+    fn lists_the_machines_real_devices() {
+        // Enumeration is unprivileged, so this runs in CI without elevation.
+        let devices = list_devices().expect("device listing succeeds on macOS");
+        assert!(!devices.is_empty(), "a Mac always has at least one disk");
+        for device in &devices {
+            assert!(device.capacity > 0, "{} has no capacity", device.id);
+            assert!(
+                device.sector_size.is_power_of_two(),
+                "{} reports sector size {}",
+                device.id,
+                device.sector_size
+            );
+            assert!(device.path.starts_with("/dev/rdisk"));
+            // Every raw device needs elevation; only images do not, and no
+            // image can appear in this list.
+            assert!(device.requires_elevation);
+        }
+    }
+
+    #[test]
+    fn refuses_a_device_that_is_not_attached() {
+        let error = scan_macos_device("disk99999", false).expect_err("must not succeed");
+        assert!(
+            format!("{error:?}").contains("no attached device"),
+            "unexpected error: {error:?}"
+        );
+    }
+
+    #[test]
+    fn refuses_a_hostile_identifier() {
+        // An identifier that is not a real device must never reach a path or a
+        // command line.
+        for hostile in ["../../etc/passwd", "disk0; rm -rf /", "/dev/rdisk0", ""] {
+            assert!(
+                scan_macos_device(hostile, false).is_err(),
+                "{hostile:?} must be refused"
+            );
+        }
     }
 }

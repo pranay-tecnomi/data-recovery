@@ -15,6 +15,8 @@ pub mod filename;
 #[cfg(target_os = "macos")]
 pub mod macos;
 #[cfg(target_os = "macos")]
+pub mod macos_enumerate;
+#[cfg(target_os = "macos")]
 pub mod macos_protocol;
 
 pub use align::{AlignedRead, align_read};
@@ -22,6 +24,8 @@ pub use filename::{SanitizedName, sanitize_component};
 
 #[cfg(target_os = "macos")]
 pub use macos::{MacRawDevice, raw_device_path};
+#[cfg(target_os = "macos")]
+pub use macos_enumerate::enumerate_devices;
 #[cfg(target_os = "macos")]
 pub use macos_protocol::{
     MAX_READ_LENGTH as MAC_HELPER_MAX_READ_LENGTH, Operation as MacHelperOperation,
