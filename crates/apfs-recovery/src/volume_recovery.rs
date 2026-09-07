@@ -43,6 +43,12 @@ where
     D: BlockDevice,
     F: FnMut(&ApfsRecoveredFileHeader, u64, &[u8]) -> RecoveryResult<()>,
 {
+    if chunk_size == 0 {
+        return Err(recovery_core::RecoveryError::IoFailure(
+            "invalid APFS volume file chunk size".into(),
+        ));
+    }
+
     let index = read_volume_filesystem_index(
         device,
         range,
