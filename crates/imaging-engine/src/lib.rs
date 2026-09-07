@@ -132,6 +132,7 @@ impl ImagingEngine {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn copy_range<D: BlockDevice, S: ImageSink>(
         &self, source: &D, sink: &mut S, range: ByteRange, cancellation: &CancellationToken,
         report: &mut ImagingReport, total_bytes: u64, progress: &mut Option<&mut dyn ImagingProgress>,

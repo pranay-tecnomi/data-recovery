@@ -539,7 +539,7 @@ mod smoke {
         // Recover the photo through the same command path the UI uses.
         let out = std::env::temp_dir().join(format!("dr-smoke-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&out);
-        let result = recover(&image, &out, &[photo.id.clone()], true).expect("recovery failed");
+        let result = recover(&image, &out, std::slice::from_ref(&photo.id), true).expect("recovery failed");
         assert_eq!(result.written, 1, "expected one recovered file");
         assert!(std::path::Path::new(&result.manifest_path).exists());
         let _ = std::fs::remove_dir_all(&out);
