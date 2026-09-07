@@ -7,10 +7,14 @@ members = [
   "crates/filesystem-probe",
   "crates/fat32-recovery",
   "crates/exfat-recovery",
+  "crates/apfs-recovery",
   "crates/imaging-engine",
   "crates/platform-device",
   "crates/candidate-pipeline",
-  "crates/apfs-recovery",
+  "crates/recovery-output",
+  "crates/file-carving",
+  "crates/integration-tests",
+  "apps/desktop/src-tauri",
 ]
 
 [workspace.package]

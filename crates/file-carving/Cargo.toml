@@ -1,5 +1,5 @@
 [package]
-name = "candidate-pipeline"
+name = "file-carving"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

@@ -1,0 +1,26 @@
+[package]
+name = "integration-tests"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+recovery-core = { path = "../recovery-core" }
+storage-io = { path = "../storage-io" }
+partition-discovery = { path = "../partition-discovery" }
+filesystem-probe = { path = "../filesystem-probe" }
+fat32-recovery = { path = "../fat32-recovery" }
+exfat-recovery = { path = "../exfat-recovery" }
+candidate-pipeline = { path = "../candidate-pipeline" }
+recovery-output = { path = "../recovery-output" }
+file-carving = { path = "../file-carving" }
+platform-device = { path = "../platform-device" }
+
+[[bin]]
+name = "make-image"
+path = "src/bin/make_image.rs"
