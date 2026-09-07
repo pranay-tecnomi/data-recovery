@@ -11,6 +11,7 @@ members = [
   "crates/imaging-engine",
   "crates/platform-device",
   "crates/candidate-pipeline",
+  "crates/recovery-engine",
   "crates/recovery-output",
   "crates/file-carving",
   "crates/integration-tests",

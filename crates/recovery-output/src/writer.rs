@@ -115,9 +115,22 @@ fn stream_candidate<D: BlockDevice, W: Write>(
     let mut buffer = vec![0u8; COPY_BUFFER];
     let mut total: u64 = 0;
 
+    // Extents are frequently block-aligned, so the last one can run past the
+    // end of the file. Writing every extent byte would pad the output to the
+    // block boundary and corrupt the file. A declared size of zero means the
+    // size is unknown, in which case the extents are all we have to go on.
+    let limit = if candidate.declared_size > 0 {
+        candidate.declared_size
+    } else {
+        u64::MAX
+    };
+
     for extent in &candidate.extents {
+        if total >= limit {
+            break;
+        }
         let mut offset = extent.source_range.offset;
-        let mut remaining = extent.source_range.length;
+        let mut remaining = extent.source_range.length.min(limit - total);
         while remaining > 0 {
             cancel.check()?;
             let take = remaining.min(COPY_BUFFER as u64);
@@ -324,6 +337,34 @@ mod tests {
 
     fn safe(root: &Path) -> SafeDestination {
         validate_destination(root, None).unwrap()
+    }
+
+    #[test]
+    fn a_block_aligned_extent_is_truncated_to_the_declared_size() {
+        // Filesystems allocate whole blocks, so the final extent routinely
+        // overruns the file. Writing the overrun would silently corrupt every
+        // file whose size is not a multiple of the block size.
+        let root = workspace("aligned-tail");
+        // One 10-byte extent describing a file that is only 5 bytes long.
+        let mut c = candidate("notes.txt", 0, 10, Completeness::Complete);
+        c.declared_size = 5;
+        let item = recover_candidate(
+            &device(),
+            &safe(&root),
+            &c,
+            CollisionPolicy::Rename,
+            &CancellationToken::default(),
+        )
+        .unwrap();
+
+        match item.outcome {
+            ItemOutcome::Written { path, bytes } => {
+                assert_eq!(bytes, 5, "only the declared bytes belong to the file");
+                assert_eq!(fs::read(&path).unwrap(), b"ABCDE");
+            }
+            other => panic!("expected a complete write, got {other:?}"),
+        }
+        fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]

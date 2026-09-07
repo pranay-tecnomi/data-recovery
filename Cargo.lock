@@ -525,6 +525,7 @@ dependencies = [
  "filesystem-probe",
  "partition-discovery",
  "recovery-core",
+ "recovery-engine",
  "recovery-output",
  "serde",
  "serde_json",
@@ -1588,6 +1589,7 @@ dependencies = [
  "partition-discovery",
  "platform-device",
  "recovery-core",
+ "recovery-engine",
  "recovery-output",
  "storage-io",
 ]
@@ -2518,6 +2520,23 @@ checksum = "20675572f6f24e9e76ef639bc5552774ed45f1c30e2951e1e99c59888861c539"
 [[package]]
 name = "recovery-core"
 version = "0.1.0"
+
+[[package]]
+name = "recovery-engine"
+version = "0.1.0"
+dependencies = [
+ "apfs-recovery",
+ "candidate-pipeline",
+ "exfat-recovery",
+ "fat32-recovery",
+ "file-carving",
+ "filesystem-probe",
+ "partition-discovery",
+ "recovery-core",
+ "recovery-output",
+ "serde",
+ "storage-io",
+]
 
 [[package]]
 name = "recovery-output"

@@ -1,7 +1,11 @@
 //! Wires the recovery crates into the operations the UI performs.
 //!
-//! This module owns no parsing logic of its own; it orchestrates the engine
+//! This crate owns no parsing logic of its own; it orchestrates the engine
 //! crates and converts their types into serialisable views for the front end.
+//! It is a library rather than a module inside the desktop binary so the
+//! end-to-end tests can drive the same scan and recovery path the app uses.
+
+#![forbid(unsafe_code)]
 
 use std::path::{Path, PathBuf};
 
