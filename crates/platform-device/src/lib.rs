@@ -14,12 +14,16 @@ pub mod filename;
 
 #[cfg(target_os = "macos")]
 pub mod macos;
+#[cfg(target_os = "macos")]
+pub mod macos_protocol;
 
 pub use align::{align_read, AlignedRead};
 pub use filename::{sanitize_component, SanitizedName};
 
 #[cfg(target_os = "macos")]
 pub use macos::{raw_device_path, MacRawDevice};
+#[cfg(target_os = "macos")]
+pub use macos_protocol::{Operation as MacHelperOperation, ProtocolRequest as MacHelperRequest, MAX_READ_LENGTH as MAC_HELPER_MAX_READ_LENGTH, PROTOCOL_VERSION as MAC_HELPER_PROTOCOL_VERSION};
 
 use recovery_core::SourceId;
 
