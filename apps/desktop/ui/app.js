@@ -272,6 +272,7 @@ function renderRow(candidate) {
   box.addEventListener("change", () => {
     box.checked ? selected.add(candidate.id) : selected.delete(candidate.id);
     updateRecover();
+loadDevices();
   });
   tick.append(box);
 
@@ -367,6 +368,7 @@ el("select-all").addEventListener("change", (event) => {
   }
   renderTable();
   updateRecover();
+loadDevices();
 });
 
 el("back").addEventListener("click", () => show("source"));
@@ -378,10 +380,78 @@ el("recover").addEventListener("click", () => {
 });
 el("cancel-recover").addEventListener("click", () => show("results"));
 
+/* ---------- attached disks ---------- */
+
+// Either { kind: "image", path } or { kind: "device", id }. A device is only
+// ever read, so selecting one never risks the source.
+let chosenDevice = null;
+
+function renderDevices(devices) {
+  const list = el("device-list");
+  list.replaceChildren();
+  if (!devices.length) {
+    const empty = document.createElement("li");
+    empty.className = "device-empty";
+    empty.textContent = "No disks detected.";
+    list.append(empty);
+    return;
+  }
+  for (const device of devices) {
+    const item = document.createElement("li");
+    item.className = "device-item";
+    if (chosenDevice === device.id) item.classList.add("is-selected");
+
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "device-button";
+    button.setAttribute("aria-pressed", String(chosenDevice === device.id));
+
+    const name = document.createElement("span");
+    name.className = "device-name";
+    name.textContent = device.display_name || device.id;
+
+    const meta = document.createElement("span");
+    meta.className = "device-meta";
+    const parts = [device.id, formatSize(device.capacity)];
+    if (device.whole_disk) parts.push("whole disk");
+    if (device.removable) parts.push("removable");
+    meta.textContent = parts.join(" · ");
+
+    button.append(name, meta);
+    button.addEventListener("click", () => {
+      // Choosing a disk clears any typed image path, so the source is
+      // never ambiguous.
+      chosenDevice = chosenDevice === device.id ? null : device.id;
+      if (chosenDevice) el("source").value = "";
+      renderDevices(devices);
+    });
+    item.append(button);
+    list.append(item);
+  }
+}
+
+async function loadDevices() {
+  if (!invoke) return;
+  try {
+    renderDevices(await invoke("list_devices"));
+  } catch (error) {
+    // Device listing is optional: the image workflow still works without it.
+    el("device-note").textContent = `Attached disks unavailable: ${error}`;
+  }
+}
+
+el("refresh-devices").addEventListener("click", loadDevices);
+el("source").addEventListener("input", () => {
+  if (el("source").value.trim()) {
+    chosenDevice = null;
+    loadDevices();
+  }
+});
+
 el("scan").addEventListener("click", async () => {
   const path = el("source").value.trim();
-  if (!path) {
-    setStatus(el("status"), "Enter the path to a disk image.", "error");
+  if (!path && !chosenDevice) {
+    setStatus(el("status"), "Choose an attached disk or enter an image path.", "error");
     return;
   }
   if (!invoke) {
@@ -394,7 +464,9 @@ el("scan").addEventListener("click", async () => {
   setStatus(el("status"), "Scanning. The source is only read, never modified.", "busy");
 
   try {
-    scan = await invoke("scan_image", { path, includeCarving: deep });
+    scan = chosenDevice
+      ? await invoke("scan_device", { identifier: chosenDevice, includeCarving: deep })
+      : await invoke("scan_image", { path, includeCarving: deep });
     candidates = scan.candidates;
     selected.clear();
     chanceFilter = null;
@@ -409,6 +481,7 @@ el("scan").addEventListener("click", async () => {
     renderTable();
     renderDetail();
     updateRecover();
+loadDevices();
 
     el("results-title").textContent =
       `${candidates.length} file${candidates.length === 1 ? "" : "s"} found`;
@@ -434,12 +507,20 @@ el("do-recover").addEventListener("click", async () => {
   el("do-recover").disabled = true;
   setStatus(el("recover-status"), "Recovering files.", "busy");
   try {
-    const result = await invoke("recover_files", {
-      source: el("source").value.trim(),
-      destination,
-      selected: [...selected],
-      includeCarving: deep,
-    });
+    // Recover from whichever source was scanned, so the ids still match.
+    const result = chosenDevice
+      ? await invoke("recover_from_device", {
+          identifier: chosenDevice,
+          destination,
+          selected: [...selected],
+          includeCarving: deep,
+        })
+      : await invoke("recover_files", {
+          source: el("source").value.trim(),
+          destination,
+          selected: [...selected],
+          includeCarving: deep,
+        });
     const parts = [`${result.written} recovered`];
     if (result.partial) parts.push(`${result.partial} partial`);
     if (result.skipped) parts.push(`${result.skipped} skipped`);
@@ -453,3 +534,4 @@ el("do-recover").addEventListener("click", async () => {
 });
 
 updateRecover();
+loadDevices();

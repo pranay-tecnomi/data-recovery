@@ -46,6 +46,28 @@ async fn scan_device(identifier: String, include_carving: bool) -> Result<ScanRe
     .map_err(|e| format!("scan task failed: {e}"))?
 }
 
+/// Recovers the selected candidates from an attached device.
+#[cfg(target_os = "macos")]
+#[tauri::command]
+async fn recover_from_device(
+    identifier: String,
+    destination: String,
+    selected: Vec<String>,
+    include_carving: bool,
+) -> Result<RecoveryResultView, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        engine::recover_from_macos_device(
+            &identifier,
+            std::path::Path::new(&destination),
+            &selected,
+            include_carving,
+        )
+        .map_err(|e| format!("{e:?}"))
+    })
+    .await
+    .map_err(|e| format!("recovery task failed: {e}"))?
+}
+
 /// Recovers the selected candidates to a destination directory.
 #[tauri::command]
 async fn recover_files(
@@ -77,6 +99,7 @@ fn main() {
         scan_image,
         list_devices,
         scan_device,
+        recover_from_device,
         recover_files
     ]);
     #[cfg(not(target_os = "macos"))]

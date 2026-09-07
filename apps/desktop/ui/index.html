@@ -43,6 +43,17 @@
                  placeholder="/path/to/disk.img" aria-label="Disk image path" />
         </div>
 
+        <div class="devices">
+          <div class="devices-head">
+            <span>Attached disks</span>
+            <button id="refresh-devices" class="link-button" type="button">Refresh</button>
+          </div>
+          <ul id="device-list" class="device-list" aria-label="Attached disks"></ul>
+          <p id="device-note" class="device-note">
+            Reading a disk directly needs permission. The disk is only read, never written.
+          </p>
+        </div>
+
         <div class="scan-modes" role="radiogroup" aria-label="Scan mode">
           <label class="mode">
             <input type="radio" name="mode" value="quick" />

@@ -627,43 +627,64 @@ pub fn recover(
     include_carving: bool,
 ) -> Result<RecoveryResultView, RecoveryError> {
     let device = FileImageDevice::open(source)?;
+    recover_from(
+        &device,
+        Some(source),
+        destination,
+        selected,
+        include_carving,
+    )
+}
+
+/// Recovers from any read-only source.
+///
+/// `source_path` is the image the destination must not sit inside; a raw
+/// device has no such path, and passing `None` skips only that comparison,
+/// never the destination validation itself.
+pub fn recover_from<D: BlockDevice>(
+    device: &D,
+    source_path: Option<&Path>,
+    destination: &Path,
+    selected: &[String],
+    include_carving: bool,
+) -> Result<RecoveryResultView, RecoveryError> {
     let cancel = CancellationToken::default();
 
     // The mandatory safety gate: never write onto the source.
-    let safe = validate_destination(destination, Some(source)).map_err(RecoveryError::from)?;
+    let safe = validate_destination(destination, source_path).map_err(RecoveryError::from)?;
     std::fs::create_dir_all(safe.path()).map_err(|e| RecoveryError::IoFailure(e.to_string()))?;
 
     // Rebuild the candidate set so ids match what the UI selected from.
     let mut diagnostics = Vec::new();
     let mut candidates: Vec<FileCandidate> = Vec::new();
-    for range in discover_partitions(&device, &mut diagnostics) {
-        match probe(&device, range).map(|e| e.kind) {
+    for range in discover_partitions(device, &mut diagnostics) {
+        match probe(device, range).map(|e| e.kind) {
             Ok(FilesystemKind::Fat32) => {
-                candidates.extend(scan_fat32(&device, range, &mut diagnostics))
+                candidates.extend(scan_fat32(device, range, &mut diagnostics))
             }
             Ok(FilesystemKind::ExFat) => {
-                candidates.extend(scan_exfat(&device, range, &mut diagnostics))
+                candidates.extend(scan_exfat(device, range, &mut diagnostics))
             }
             Ok(FilesystemKind::Apfs) => {
-                candidates.extend(scan_apfs(&device, range, &mut diagnostics))
+                candidates.extend(scan_apfs(device, range, &mut diagnostics))
             }
             _ => {}
         }
     }
     if include_carving
         && let Ok(whole) = ByteRange::new(0, device.capacity())
-        && let Ok(carved) = carve(&device, whole, REGISTRY, &CarveLimits::default(), &cancel)
+        && let Ok(carved) = carve(device, whole, REGISTRY, &CarveLimits::default(), &cancel)
     {
         candidates.extend(carved);
     }
-    let candidates = run_pipeline(&device, candidates, &cancel)?;
+    let candidates = run_pipeline(device, candidates, &cancel)?;
 
     let chosen: Vec<FileCandidate> = candidates
         .into_iter()
         .filter(|c| selected.iter().any(|id| id == c.id.as_str()))
         .collect();
 
-    let results = recover_all(&device, &safe, &chosen, CollisionPolicy::Rename, &cancel)?;
+    let results = recover_all(device, &safe, &chosen, CollisionPolicy::Rename, &cancel)?;
 
     let (mut written, mut partial, mut skipped, mut failed) = (0, 0, 0, 0);
     let mut manifest_entries = Vec::new();
@@ -694,6 +715,20 @@ pub fn recover(
         destination: safe.path().display().to_string(),
         manifest_path: manifest_path.display().to_string(),
     })
+}
+
+/// Recovers from an attached macOS device.
+#[cfg(target_os = "macos")]
+pub fn recover_from_macos_device(
+    identifier: &str,
+    destination: &Path,
+    selected: &[String],
+    include_carving: bool,
+) -> Result<RecoveryResultView, RecoveryError> {
+    let device = open_macos_device(identifier)?;
+    // A raw device is not a filesystem path, so there is no containing
+    // directory for the destination to collide with.
+    recover_from(&device, None, destination, selected, include_carving)
 }
 
 #[cfg(test)]
@@ -843,6 +878,17 @@ mod macos_tests {
     #[test]
     fn refuses_a_device_that_is_not_attached() {
         let error = scan_macos_device("disk99999", false).expect_err("must not succeed");
+        assert!(
+            format!("{error:?}").contains("no attached device"),
+            "unexpected error: {error:?}"
+        );
+    }
+
+    #[test]
+    fn device_recovery_refuses_an_unattached_identifier() {
+        let dir = std::env::temp_dir().join(format!("device-recover-{}", std::process::id()));
+        let error = recover_from_macos_device("disk99999", &dir, &[], false)
+            .expect_err("an unattached device must not be recoverable");
         assert!(
             format!("{error:?}").contains("no attached device"),
             "unexpected error: {error:?}"
