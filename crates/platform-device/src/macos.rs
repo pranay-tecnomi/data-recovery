@@ -25,8 +25,11 @@ pub struct MacRawDevice {
 }
 
 impl MacRawDevice {
-    /// Opens a macOS device read-only.
+    /// Opens a macOS raw disk or volume read-only.
     ///
+    /// The path is restricted to `/dev/diskN[sM]` and `/dev/rdiskN[sM]` and is
+    /// canonicalized to the raw spelling before opening. This is deliberate:
+    /// `MacRawDevice` is a physical-device adapter, not a generic file reader.
     /// `capacity` and sector sizes come from platform enumeration rather than
     /// filesystem metadata. The path is retained only for display/opening;
     /// `source_id` is the stable identity used by recovery state.
@@ -44,6 +47,11 @@ impl MacRawDevice {
         display_name: Option<String>,
         removable: bool,
     ) -> RecoveryResult<Self> {
+        if matches!(kind, SourceKind::Image) {
+            return Err(RecoveryError::Unsupported(
+                "macOS raw-device adapter cannot open image sources".into(),
+            ));
+        }
         if capacity == 0 {
             return Err(RecoveryError::IoFailure("macOS device capacity is zero".into()));
         }
@@ -65,11 +73,11 @@ impl MacRawDevice {
             }
         }
 
-        let path = path.as_ref();
+        let path = raw_device_path(path)?;
         let file = OpenOptions::new()
             .read(true)
             .write(false)
-            .open(path)
+            .open(&path)
             .map_err(|e| RecoveryError::IoFailure(format!("open {}: {e}", path.display())))?;
         let info = DeviceInfo {
             id: source_id,
